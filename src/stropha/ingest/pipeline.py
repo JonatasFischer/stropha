@@ -26,6 +26,7 @@ from ..logging import get_logger
 from ..models import Chunk
 from ..storage import Storage
 from .chunker import Chunker
+from .git_meta import detect as detect_repo
 from .walker import Walker
 
 log = get_logger(__name__)
@@ -37,6 +38,9 @@ class IndexStats:
     chunks_seen: int = 0
     chunks_embedded: int = 0
     chunks_skipped_fresh: int = 0
+    repo_normalized_key: str | None = None
+    repo_url: str | None = None
+    chunks_backfilled: int = 0
 
 
 class IndexPipeline:
@@ -55,17 +59,45 @@ class IndexPipeline:
         self._walker = walker or Walker(self._repo)
 
     def run(self, *, rebuild: bool = False) -> IndexStats:
+        stats = IndexStats()
+
+        # 1. Identify + register the repository BEFORE clearing/indexing so
+        #    every chunk carries the correct repo_id.
+        identity = detect_repo(self._repo)
+        repo_id = self._storage.register_repo(identity)
+        stats.repo_normalized_key = identity.normalized_key
+        stats.repo_url = identity.remote_url
+        log.info(
+            "pipeline.repo_registered",
+            repo=identity.normalized_key,
+            url=identity.remote_url,
+            branch=identity.default_branch,
+            commit=identity.head_commit,
+        )
+
+        # 2. Backfill orphan chunks (schema v1 → v2 upgrade path).
+        if not rebuild and self._storage.count_chunks_without_repo() > 0:
+            n = self._storage.backfill_chunks_to_repo(repo_id, self._repo)
+            stats.chunks_backfilled = n
+            if n > 0:
+                log.info("pipeline.chunks_backfilled", count=n, repo_id=repo_id)
+                self._storage.commit()
+
+        # 3. Optional clean slate.
         if rebuild:
             log.info("pipeline.rebuild_clear")
             self._storage.clear()
-        stats = IndexStats()
-        self._index_files(self._walker.discover(), stats)
+
+        # 4. Walk → chunk → embed → upsert.
+        self._index_files(self._walker.discover(), stats, repo_id=repo_id)
         self._storage.commit()
         return stats
 
     # ----- internals -----
 
-    def _index_files(self, files: Iterable, stats: IndexStats) -> None:
+    def _index_files(
+        self, files: Iterable, stats: IndexStats, *, repo_id: int
+    ) -> None:
         batch_size = self._embedder.batch_size
         batch_texts: list[str] = []
         batch_chunks: list[Chunk] = []
@@ -77,7 +109,11 @@ class IndexPipeline:
             vectors = self._embedder.embed_documents(batch_texts)
             for chunk, vec in zip(batch_chunks, vectors, strict=True):
                 self._storage.upsert_chunk(
-                    chunk, vec, self._embedder.model_name, self._embedder.dim
+                    chunk,
+                    vec,
+                    self._embedder.model_name,
+                    self._embedder.dim,
+                    repo_id=repo_id,
                 )
                 stats.chunks_embedded += 1
             self._storage.commit()

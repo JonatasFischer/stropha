@@ -2,7 +2,7 @@
 
 Documento de design técnico para um sistema de Retrieval-Augmented Generation (RAG) cuja função é servir como fonte de verdade sobre o codebase Mimoria, exposto ao Claude Code (e outros clientes LLM) via Model Context Protocol (MCP).
 
-> **Status**: Phase 0 (spike) e Phase 1 (MVP MCP) implementados — ver §16. Para o estado vivo da implementação consulte `CLAUDE.md` na raiz do projeto. O documento mapeia o espaço de soluções inteiro — cada decisão tem alternativas listadas com tradeoffs, e o final traz uma recomendação concreta para este projeto.
+> **Status**: Phase 0 (spike) e Phase 1 (MVP MCP) implementados — ver §16. Esquema v2 adiciona identidade de repositório por chunk (foundation para multi-repo da Phase 4). Para o estado vivo da implementação consulte `CLAUDE.md` na raiz do projeto. O documento mapeia o espaço de soluções inteiro — cada decisão tem alternativas listadas com tradeoffs, e o final traz uma recomendação concreta para este projeto.
 
 ---
 
@@ -1169,7 +1169,8 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 - [ ] Cost dashboard.
 
 ### Phase 4 — Escala / extensão
-- [ ] Suporte multi-repo.
+- [x] **Foundation multi-repo**: schema v2 adiciona tabela `repos` + coluna `chunks.repo_id` + tool MCP `list_repos`. Cada `SearchHit` carrega `repo` com URL, branch e HEAD para o cliente fazer `git clone`. Normalização de URL deduplica SSH/HTTPS do mesmo repo; auth tokens são removidos antes da persistência. Detalhes em `src/stropha/ingest/git_meta.py`.
+- [ ] Multi-repo indexer UX: `stropha index --repo A --repo B` ou manifest YAML; auto-discovery de nested `.git` durante o walk.
 - [ ] Indexação de dependências externas (Quarkus, Vue) on-demand.
 - [ ] Modelo de embedding self-hosted (bge-m3) como fallback offline.
 - [ ] Deploy remoto com OAuth 2.1.

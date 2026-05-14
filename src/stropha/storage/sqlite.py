@@ -18,12 +18,15 @@ from typing import Any
 import sqlite_vec  # type: ignore[import-untyped]
 
 from ..errors import StorageError
+from ..ingest.git_meta import RepoIdentity
 from ..logging import get_logger
-from ..models import Chunk, SearchHit
+from ..models import Chunk, RepoRef, RepoStats, SearchHit
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+# v1: initial schema (chunks, vec_chunks, fts_chunks, meta).
+# v2: adds `repos` table and `chunks.repo_id` column for multi-repo support.
+SCHEMA_VERSION = 2
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -84,6 +87,38 @@ def _fts_text(content: str, rel_path: str, symbol: str | None) -> str:
 
 def _snippet(content: str, limit: int = 480) -> str:
     return content[:limit].rstrip() + ("…" if len(content) > limit else "")
+
+
+def _repo_from_row(row: Any) -> RepoRef | None:
+    """Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.
+
+    Returns ``None`` for chunks without a repo (legacy data pre-schema-v2).
+    """
+    key = row["repo_normalized_key"] if "repo_normalized_key" in row.keys() else None
+    if not key:
+        return None
+    return RepoRef(
+        normalized_key=key,
+        url=row["repo_url"] if "repo_url" in row.keys() else None,
+        default_branch=(
+            row["repo_default_branch"] if "repo_default_branch" in row.keys() else None
+        ),
+        head_commit=(
+            row["repo_head_commit"] if "repo_head_commit" in row.keys() else None
+        ),
+    )
+
+
+# Common SELECT clause emitting both chunk and repo columns. Reused by all
+# search_* paths. Aliases are stable so _repo_from_row can rely on them.
+_REPO_JOIN_COLUMNS = """
+    c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
+    c.start_line, c.end_line, c.content,
+    r.normalized_key  AS repo_normalized_key,
+    r.remote_url      AS repo_url,
+    r.default_branch  AS repo_default_branch,
+    r.head_commit     AS repo_head_commit
+"""
 
 
 # Common English stopwords + question words. Filtered out from identifier-token
@@ -200,8 +235,30 @@ class Storage:
                 content_rowid='id',
                 tokenize='unicode61'
             );
+
+            -- v2: repository identity (multi-repo support).
+            CREATE TABLE IF NOT EXISTS repos (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                normalized_key     TEXT NOT NULL UNIQUE,
+                remote_url         TEXT,
+                root_path          TEXT NOT NULL,
+                default_branch     TEXT,
+                head_commit        TEXT,
+                first_indexed_at   TEXT NOT NULL,
+                last_indexed_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_repos_normalized_key
+                ON repos(normalized_key);
             """
         )
+        # v2: add chunks.repo_id (ALTER TABLE is idempotent only when guarded).
+        self._add_column_if_missing(
+            "chunks", "repo_id", "INTEGER REFERENCES repos(id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo_id);"
+        )
+
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
             ("schema_version", str(SCHEMA_VERSION)),
@@ -210,7 +267,19 @@ class Storage:
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
             ("embedding_dim", str(self._dim)),
         )
+        # Bump schema_version if this is an in-place upgrade.
+        cur.execute(
+            "UPDATE meta SET value=? WHERE key='schema_version' AND CAST(value AS INTEGER) < ?",
+            (str(SCHEMA_VERSION), SCHEMA_VERSION),
+        )
         self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, decl: str) -> None:
+        """Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN."""
+        cols = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(row["name"] == column for row in cols):
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def _check_dimension_consistency(self) -> None:
         row = self._conn.execute(
@@ -222,6 +291,131 @@ class Storage:
                 f"Index was built with dim={stored_dim} but current embedder uses dim={self._dim}. "
                 f"Run `stropha index --rebuild` to rebuild."
             )
+
+    # ----- repos -----
+
+    def register_repo(self, identity: RepoIdentity) -> int:
+        """Insert or update a repo row keyed by ``normalized_key``. Returns its id.
+
+        Idempotent: re-running ``index`` against the same repo updates
+        ``last_indexed_at`` + ``head_commit`` + ``default_branch`` without
+        creating duplicates.
+        """
+        now = datetime.now(UTC).isoformat()
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT id FROM repos WHERE normalized_key = ?",
+            (identity.normalized_key,),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            repo_id = int(row["id"])
+            cur.execute(
+                """
+                UPDATE repos
+                   SET remote_url       = ?,
+                       root_path        = ?,
+                       default_branch   = ?,
+                       head_commit      = ?,
+                       last_indexed_at  = ?
+                 WHERE id = ?
+                """,
+                (
+                    identity.remote_url,
+                    str(identity.root_path),
+                    identity.default_branch,
+                    identity.head_commit,
+                    now,
+                    repo_id,
+                ),
+            )
+            return repo_id
+
+        cur.execute(
+            """
+            INSERT INTO repos (
+                normalized_key, remote_url, root_path,
+                default_branch, head_commit,
+                first_indexed_at, last_indexed_at
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                identity.normalized_key,
+                identity.remote_url,
+                str(identity.root_path),
+                identity.default_branch,
+                identity.head_commit,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    def count_chunks_without_repo(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE repo_id IS NULL"
+        ).fetchone()
+        return int(row["n"])
+
+    def backfill_chunks_to_repo(self, repo_id: int, sample_root: Path) -> int:
+        """Best-effort assignment of orphan chunks to ``repo_id``.
+
+        Used on upgrade from schema v1 (no ``repo_id`` column). Performs a
+        sanity check first: at least one of the orphan chunks' ``rel_path``
+        must exist under ``sample_root``. If the check fails we refuse to
+        backfill — the user likely changed ``STROPHA_TARGET_REPO`` between
+        indexer runs.
+
+        Returns the number of chunks updated (0 if sanity check failed).
+        """
+        rows = self._conn.execute(
+            "SELECT rel_path FROM chunks WHERE repo_id IS NULL LIMIT 5"
+        ).fetchall()
+        if not rows:
+            return 0
+        if not any((sample_root / r["rel_path"]).is_file() for r in rows):
+            log.warning(
+                "storage.backfill_skipped_sanity",
+                sample_root=str(sample_root),
+                samples=[r["rel_path"] for r in rows],
+            )
+            return 0
+        cur = self._conn.execute(
+            "UPDATE chunks SET repo_id = ? WHERE repo_id IS NULL",
+            (repo_id,),
+        )
+        return int(cur.rowcount or 0)
+
+    def list_repos(self) -> list[RepoStats]:
+        """Per-repo aggregate counters."""
+        rows = self._conn.execute(
+            """
+            SELECT
+                r.normalized_key,
+                r.remote_url      AS url,
+                r.default_branch,
+                r.head_commit,
+                r.last_indexed_at,
+                COUNT(DISTINCT c.rel_path) AS files,
+                COUNT(c.id)                AS chunks
+            FROM repos r
+            LEFT JOIN chunks c ON c.repo_id = r.id
+            GROUP BY r.id
+            ORDER BY chunks DESC
+            """
+        ).fetchall()
+        return [
+            RepoStats(
+                normalized_key=row["normalized_key"],
+                url=row["url"],
+                default_branch=row["default_branch"],
+                head_commit=row["head_commit"],
+                files=int(row["files"]),
+                chunks=int(row["chunks"]),
+                last_indexed_at=row["last_indexed_at"],
+            )
+            for row in rows
+        ]
 
     # ----- writes -----
 
@@ -267,8 +461,14 @@ class Storage:
         embedding: list[float],
         embedding_model: str,
         embedding_dim: int,
+        repo_id: int | None = None,
     ) -> int:
-        """Insert (or update) a chunk and its vector atomically. Returns rowid."""
+        """Insert (or update) a chunk and its vector atomically. Returns rowid.
+
+        ``repo_id`` carries the source-repository identity (see ``repos`` table).
+        Optional only for the legacy in-memory codepath; the pipeline always
+        passes it.
+        """
         if len(embedding) != self._dim:
             raise StorageError(
                 f"Embedding dim mismatch: got {len(embedding)}, expected {self._dim}"
@@ -285,14 +485,14 @@ class Storage:
                 UPDATE chunks SET
                     rel_path=?, language=?, kind=?, symbol=?, parent_chunk_id=?,
                     start_line=?, end_line=?, content=?, content_hash=?,
-                    embedding_model=?, embedding_dim=?, indexed_at=?
+                    embedding_model=?, embedding_dim=?, indexed_at=?, repo_id=?
                 WHERE id = ?
                 """,
                 (
                     chunk.rel_path, chunk.language, chunk.kind, chunk.symbol,
                     chunk.parent_chunk_id, chunk.start_line, chunk.end_line,
                     chunk.content, chunk.content_hash, embedding_model,
-                    embedding_dim, now, rowid,
+                    embedding_dim, now, repo_id, rowid,
                 ),
             )
             cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
@@ -303,14 +503,14 @@ class Storage:
                 INSERT INTO chunks (
                     chunk_id, rel_path, language, kind, symbol, parent_chunk_id,
                     start_line, end_line, content, content_hash,
-                    embedding_model, embedding_dim, indexed_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    embedding_model, embedding_dim, indexed_at, repo_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     chunk.chunk_id, chunk.rel_path, chunk.language, chunk.kind,
                     chunk.symbol, chunk.parent_chunk_id, chunk.start_line,
                     chunk.end_line, chunk.content, chunk.content_hash,
-                    embedding_model, embedding_dim, now,
+                    embedding_model, embedding_dim, now, repo_id,
                 ),
             )
             rowid = int(cur.lastrowid or 0)
@@ -329,7 +529,11 @@ class Storage:
         self._conn.commit()
 
     def clear(self) -> None:
-        """Wipe the index. Used by `index --rebuild`."""
+        """Wipe the index. Used by `index --rebuild`.
+
+        Preserves the ``repos`` table — repository identity survives rebuilds
+        so the same id is reused, keeping FK semantics meaningful across runs.
+        """
         cur = self._conn.cursor()
         cur.executescript(
             """
@@ -349,13 +553,13 @@ class Storage:
                 f"Query embedding dim {len(query_vec)} != index dim {self._dim}"
             )
         rows = self._conn.execute(
-            """
+            f"""
             SELECT
-                c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
-                c.start_line, c.end_line, c.content,
+                {_REPO_JOIN_COLUMNS},
                 v.distance AS distance
             FROM vec_chunks v
             JOIN chunks c ON c.id = v.rowid
+            LEFT JOIN repos r ON r.id = c.repo_id
             WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
             """,
@@ -378,6 +582,7 @@ class Storage:
                     end_line=int(row["end_line"]),
                     snippet=_snippet(row["content"]),
                     chunk_id=row["chunk_id"],
+                    repo=_repo_from_row(row),
                 )
             )
         return hits
@@ -389,13 +594,13 @@ class Storage:
             return []
         try:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT
-                    c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
-                    c.start_line, c.end_line, c.content,
+                    {_REPO_JOIN_COLUMNS},
                     bm25(fts_chunks) AS score
                 FROM fts_chunks
                 JOIN chunks c ON c.id = fts_chunks.rowid
+                LEFT JOIN repos r ON r.id = c.repo_id
                 WHERE fts_chunks MATCH ?
                 ORDER BY score
                 LIMIT ?
@@ -423,6 +628,7 @@ class Storage:
                     end_line=int(row["end_line"]),
                     snippet=_snippet(row["content"]),
                     chunk_id=row["chunk_id"],
+                    repo=_repo_from_row(row),
                 )
             )
         return hits
@@ -449,12 +655,13 @@ class Storage:
         params = params + [f"%{t}%" for t in tokens] + [k]
         rows = self._conn.execute(
             f"""
-            SELECT chunk_id, rel_path, language, kind, symbol,
-                   start_line, end_line, content,
+            SELECT {_REPO_JOIN_COLUMNS},
                    ({score_terms}) AS match_count
-            FROM chunks
-            WHERE ({like_clauses}) AND symbol IS NOT NULL
-            ORDER BY match_count DESC, LENGTH(symbol) ASC
+            FROM chunks c
+            LEFT JOIN repos r ON r.id = c.repo_id
+            WHERE ({like_clauses.replace("symbol", "c.symbol")})
+              AND c.symbol IS NOT NULL
+            ORDER BY match_count DESC, LENGTH(c.symbol) ASC
             LIMIT ?
             """,
             params,
@@ -471,6 +678,7 @@ class Storage:
                 end_line=int(row["end_line"]),
                 snippet=_snippet(row["content"]),
                 chunk_id=row["chunk_id"],
+                repo=_repo_from_row(row),
             )
             for rank, row in enumerate(rows, start=1)
         ]
@@ -483,18 +691,18 @@ class Storage:
         Matches `Foo.bar`, `bar` (suffix), and case-insensitively as fallback.
         """
         rows = self._conn.execute(
-            """
-            SELECT chunk_id, rel_path, language, kind, symbol,
-                   start_line, end_line, content
-            FROM chunks
-            WHERE symbol = ?
-               OR symbol LIKE ? COLLATE NOCASE
-               OR symbol LIKE ? COLLATE NOCASE
+            f"""
+            SELECT {_REPO_JOIN_COLUMNS}
+            FROM chunks c
+            LEFT JOIN repos r ON r.id = c.repo_id
+            WHERE c.symbol = ?
+               OR c.symbol LIKE ? COLLATE NOCASE
+               OR c.symbol LIKE ? COLLATE NOCASE
             ORDER BY
-                CASE WHEN symbol = ? THEN 0
-                     WHEN symbol LIKE ? COLLATE NOCASE THEN 1
+                CASE WHEN c.symbol = ? THEN 0
+                     WHEN c.symbol LIKE ? COLLATE NOCASE THEN 1
                      ELSE 2 END,
-                LENGTH(symbol)
+                LENGTH(c.symbol)
             LIMIT ?
             """,
             (symbol, f"%.{symbol}", f"%{symbol}%", symbol, f"%.{symbol}", limit),
@@ -511,6 +719,7 @@ class Storage:
                 end_line=int(row["end_line"]),
                 snippet=_snippet(row["content"]),
                 chunk_id=row["chunk_id"],
+                repo=_repo_from_row(row),
             )
             for rank, row in enumerate(rows, start=1)
         ]
@@ -564,6 +773,7 @@ class Storage:
             ).fetchall()
         ]
         size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
+        repos = [r.model_dump() for r in self.list_repos()]
         return {
             "db_path": str(self._db_path),
             "size_bytes": size_bytes,
@@ -571,6 +781,7 @@ class Storage:
             "files": int(files),
             "index_dim": self._dim,
             "models": models,
+            "repos": repos,
         }
 
     def close(self) -> None:

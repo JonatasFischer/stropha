@@ -36,12 +36,19 @@ Phase 1 ✓:
       path/symbol tokens augmenting the FTS document) + symbol-token
       lookup (query routing per spec §6.3.5).
 - [x] MCP server (`stropha-mcp`) over stdio. Tools: `search_code`,
-      `get_symbol`, `get_file_outline`. Resource: `stropha://stats`.
+      `get_symbol`, `get_file_outline`, `list_repos`.
+      Resource: `stropha://stats`.
 - [x] `.mcp.example.json` template for Claude Code / Cursor integration.
 - [x] Chunk-level freshness skip — re-running `index` on a stable repo
       is near-instant (no API calls, no DB writes).
 - [x] Local embedder default: `mixedbread-ai/mxbai-embed-large-v1`
       (1024-dim, top open MTEB at this scale, ONNX-stable on macOS aarch64).
+- [x] **Per-chunk repository identity** (schema v2): every chunk records
+      the git repo it came from (`normalized_key`, clone URL, default
+      branch, HEAD commit at index time). Returned in every `SearchHit`
+      so MCP clients can `git clone <url>` to fetch the source. Schema
+      auto-migrates from v1 with sanity-checked backfill. Foundation for
+      multi-repo indexing (Phase 4 in the spec roadmap).
 
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 
@@ -93,6 +100,7 @@ uv run stropha stats
 | `server.py` | MCP server entry (`stropha-mcp`); FastMCP with lifespan composition root. |
 | `config.py` | Pydantic settings loaded from `.env`. |
 | `ingest/walker.py` | Discover indexable files via `git ls-files` + `.strophaignore` + binary/size filters. |
+| `ingest/git_meta.py` | Detect repo identity (normalized key, clone URL, default branch, HEAD) with auth-token stripping. |
 | `ingest/chunker.py` | Dispatcher: picks per-language chunker, falls back to file-level on errors. |
 | `ingest/chunkers/ast_generic.py` | Tree-sitter via `tree-sitter-language-pack.process()` (Java, TS, JS, Python, Rust, Go, Kotlin). |
 | `ingest/chunkers/markdown.py` | Heading-based section split. |

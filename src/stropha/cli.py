@@ -89,6 +89,16 @@ def index(
             f"{stats.chunks_embedded} embedded · "
             f"{stats.chunks_skipped_fresh} reused"
         )
+        if stats.repo_normalized_key:
+            console.print(
+                f"[dim]Repo:[/dim] {stats.repo_normalized_key}"
+                + (f"  ([blue]{stats.repo_url}[/blue])" if stats.repo_url else "")
+            )
+        if stats.chunks_backfilled:
+            console.print(
+                f"[dim]Auto-backfilled {stats.chunks_backfilled} legacy chunks "
+                f"to current repo.[/dim]"
+            )
     except StrophaError as exc:
         console.print(f"[red]Indexing failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -117,18 +127,26 @@ def search(
     table = Table(title=f"Top {len(hits)} for {query!r}", show_lines=False)
     table.add_column("#", justify="right", style="cyan", no_wrap=True)
     table.add_column("Score", justify="right")
+    table.add_column("Repo", overflow="fold", style="dim")
     table.add_column("Path:Lines", overflow="fold")
     table.add_column("Kind")
     table.add_column("Symbol", overflow="fold")
     table.add_column("Snippet", overflow="fold")
     for h in hits:
+        repo_label = h.repo.normalized_key if h.repo else "—"
+        # Truncate to last two path segments for compactness.
+        if "/" in repo_label:
+            parts = repo_label.split("/")
+            if len(parts) > 2:
+                repo_label = ".../" + "/".join(parts[-2:])
         table.add_row(
             str(h.rank),
             f"{h.score:.3f}",
+            repo_label,
             f"{h.rel_path}:{h.start_line}-{h.end_line}",
             h.kind,
             h.symbol or "—",
-            h.snippet.replace("\n", " ⏎ ")[:160],
+            h.snippet.replace("\n", " ⏎ ")[:140],
         )
     console.print(table)
 
@@ -164,6 +182,25 @@ def stats() -> None:
             "[yellow]Warning:[/yellow] index contains multiple embedding models. "
             "Run `stropha index --rebuild` to normalize."
         )
+    if info["repos"]:
+        repos_table = Table(title="Repositories in index")
+        repos_table.add_column("Repo", overflow="fold")
+        repos_table.add_column("Clone URL", overflow="fold")
+        repos_table.add_column("Branch")
+        repos_table.add_column("Files", justify="right")
+        repos_table.add_column("Chunks", justify="right")
+        repos_table.add_column("HEAD")
+        for r in info["repos"]:
+            head = (r["head_commit"] or "")[:8] or "—"
+            repos_table.add_row(
+                r["normalized_key"],
+                r["url"] or "—",
+                r["default_branch"] or "—",
+                str(r["files"]),
+                str(r["chunks"]),
+                head,
+            )
+        console.print(repos_table)
 
 
 if __name__ == "__main__":

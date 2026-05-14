@@ -6,10 +6,13 @@ and exposes the Phase 1 tool surface from spec §9.2:
 - `search_code`         — hybrid retrieval (dense + BM25 + RRF).
 - `get_symbol`          — direct symbol lookup.
 - `get_file_outline`    — symbolic outline of a single file.
+- `list_repos`          — enumerate repositories present in the index.
 - `index_stats` resource (stropha://stats).
 
-The server speaks stdio by default; that is the transport Claude Code, Cursor
-and friends launch automatically when configured via `.mcp.json`.
+Every search result carries a ``repo`` field (URL, default branch, HEAD)
+so a remote MCP client can ``git clone`` the source. The server speaks
+stdio by default; that is the transport Claude Code, Cursor and friends
+launch automatically when configured via `.mcp.json`.
 """
 
 from __future__ import annotations
@@ -89,10 +92,25 @@ mcp = FastMCP(
 
 # ---- response models --------------------------------------------------------
 
+class RepoInfo(BaseModel):
+    """Source-repo identity attached to every search result.
+
+    A client can run `git clone {url}` (when `url` is non-null) to obtain
+    the source tree, then check out `default_branch` (or `head_commit`).
+    """
+
+    normalized_key: str = Field(
+        description="Stable cross-user key (e.g. 'github.com/foo/bar')."
+    )
+    url: str | None = Field(default=None, description="HTTPS clone URL.")
+    default_branch: str | None = None
+    head_commit: str | None = None
+
+
 class SearchResult(BaseModel):
     rank: int
     score: float = Field(description="Hybrid (RRF) score; higher = more relevant.")
-    path: str
+    path: str = Field(description="File path relative to the repo root.")
     start_line: int
     end_line: int
     language: str
@@ -100,6 +118,10 @@ class SearchResult(BaseModel):
     symbol: str | None = None
     snippet: str = Field(description="Truncated preview. Use Read tool for full content.")
     chunk_id: str
+    repo: RepoInfo | None = Field(
+        default=None,
+        description="Source repository identity (URL, branch, HEAD).",
+    )
 
 
 class SearchResponse(BaseModel):
@@ -119,6 +141,18 @@ class OutlineEntry(BaseModel):
     end_line: int
 
 
+class RepoSummary(BaseModel):
+    """One entry in the `list_repos` response."""
+
+    normalized_key: str
+    url: str | None
+    default_branch: str | None
+    head_commit: str | None
+    files: int
+    chunks: int
+    last_indexed_at: str | None
+
+
 class StatsPayload(BaseModel):
     db_path: str
     size_bytes: int
@@ -126,6 +160,7 @@ class StatsPayload(BaseModel):
     files: int
     index_dim: int
     models: list[dict]
+    repos: list[RepoSummary] = Field(default_factory=list)
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -135,6 +170,14 @@ def _ctx(mcp_ctx: Context) -> AppContext:
 
 
 def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
+    repo: RepoInfo | None = None
+    if hit.repo is not None:
+        repo = RepoInfo(
+            normalized_key=hit.repo.normalized_key,
+            url=hit.repo.url,
+            default_branch=hit.repo.default_branch,
+            head_commit=hit.repo.head_commit,
+        )
     return SearchResult(
         rank=hit.rank,
         score=hit.score,
@@ -146,6 +189,7 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
         symbol=hit.symbol,
         snippet=hit.snippet,
         chunk_id=hit.chunk_id,
+        repo=repo,
     )
 
 
@@ -200,6 +244,32 @@ def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResul
     app = _ctx(ctx)
     hits = app.storage.lookup_by_symbol(symbol, limit=max(1, min(limit, 20)))
     return [_to_result(h) for h in hits]
+
+
+@mcp.tool(
+    title="List repositories",
+    description=(
+        "Enumerate every repository present in this index, with file and "
+        "chunk counts. Useful when the index spans multiple repos and the "
+        "client needs to know what is available before issuing search_code. "
+        "Each entry includes the clone URL when available."
+    ),
+)
+def list_repos(*, ctx: Context) -> list[RepoSummary]:
+    """Aggregate per-repo stats. Cheap query — single GROUP BY."""
+    app = _ctx(ctx)
+    return [
+        RepoSummary(
+            normalized_key=r.normalized_key,
+            url=r.url,
+            default_branch=r.default_branch,
+            head_commit=r.head_commit,
+            files=r.files,
+            chunks=r.chunks,
+            last_indexed_at=r.last_indexed_at,
+        )
+        for r in app.storage.list_repos()
+    ]
 
 
 @mcp.tool(

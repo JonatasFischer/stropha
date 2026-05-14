@@ -7,8 +7,19 @@ from pathlib import Path
 import pytest
 
 from stropha.errors import StorageError
+from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import Chunk
 from stropha.storage import Storage
+
+
+def _identity(key: str = "github.com/example/repo", url: str | None = None) -> RepoIdentity:
+    return RepoIdentity(
+        normalized_key=key,
+        remote_url=url or f"https://{key}.git",
+        root_path=Path("/tmp/example/repo"),
+        default_branch="main",
+        head_commit="abc123",
+    )
 
 
 def _make_chunk(
@@ -168,3 +179,110 @@ def test_dimension_mismatch_rejected(tmp_path: Path) -> None:
     s.close()
     with pytest.raises(StorageError):
         Storage(db, embedding_dim=8)
+
+
+# ---- repos table & SearchHit.repo ----------------------------------------
+
+def test_register_repo_is_idempotent(storage: Storage) -> None:
+    rid1 = storage.register_repo(_identity("github.com/a/b"))
+    rid2 = storage.register_repo(_identity("github.com/a/b"))
+    storage.commit()
+    assert rid1 == rid2
+    repos = storage.list_repos()
+    assert len(repos) == 1
+
+
+def test_register_repo_distinct_keys_get_distinct_ids(storage: Storage) -> None:
+    a = storage.register_repo(_identity("github.com/a/b"))
+    b = storage.register_repo(_identity("github.com/c/d"))
+    storage.commit()
+    assert a != b
+    assert {r.normalized_key for r in storage.list_repos()} == {
+        "github.com/a/b",
+        "github.com/c/d",
+    }
+
+
+def test_search_hit_carries_repo(storage: Storage) -> None:
+    rid = storage.register_repo(_identity("github.com/foo/bar"))
+    storage.upsert_chunk(
+        _make_chunk("sha256:r", "Foo.java", "class Foo {}", symbol="Foo"),
+        _vec(0), "m", 4, repo_id=rid,
+    )
+    storage.commit()
+
+    hits = storage.search_dense(_vec(0), k=1)
+    assert hits and hits[0].repo is not None
+    assert hits[0].repo.normalized_key == "github.com/foo/bar"
+    assert hits[0].repo.url == "https://github.com/foo/bar.git"
+    assert hits[0].repo.default_branch == "main"
+
+    # Same field surfaces through bm25 and symbol-lookup streams.
+    bm = storage.search_bm25("Foo", k=1)
+    assert bm and bm[0].repo and bm[0].repo.normalized_key == "github.com/foo/bar"
+
+    sym = storage.lookup_by_symbol("Foo", limit=1)
+    assert sym and sym[0].repo and sym[0].repo.normalized_key == "github.com/foo/bar"
+
+
+def test_chunk_without_repo_id_yields_none_repo(storage: Storage) -> None:
+    storage.upsert_chunk(
+        _make_chunk("sha256:n", "Bare.java", "class Bare {}"),
+        _vec(0), "m", 4, repo_id=None,
+    )
+    storage.commit()
+    hits = storage.search_dense(_vec(0), k=1)
+    assert hits and hits[0].repo is None
+
+
+def test_clear_preserves_repos(storage: Storage) -> None:
+    rid = storage.register_repo(_identity("github.com/keep/me"))
+    storage.upsert_chunk(
+        _make_chunk("sha256:k", "x.java", "x"),
+        _vec(0), "m", 4, repo_id=rid,
+    )
+    storage.commit()
+    storage.clear()
+    # Chunks gone, repo preserved.
+    assert storage.stats()["chunks"] == 0
+    assert len(storage.list_repos()) == 1
+
+
+def test_backfill_with_sanity_check(tmp_path: Path) -> None:
+    """Auto-backfill assigns orphan chunks when target_repo paths match."""
+    repo_root = tmp_path / "fake-repo"
+    repo_root.mkdir()
+    real_file = repo_root / "Hello.java"
+    real_file.write_text("class Hello {}")
+
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+    # Insert orphan chunk pointing at a path that EXISTS under repo_root.
+    s.upsert_chunk(
+        _make_chunk("sha256:o", "Hello.java", "class Hello {}"),
+        _vec(0), "m", 4, repo_id=None,
+    )
+    s.commit()
+
+    assert s.count_chunks_without_repo() == 1
+    rid = s.register_repo(_identity("github.com/q/r"))
+    n = s.backfill_chunks_to_repo(rid, sample_root=repo_root)
+    s.commit()
+    assert n == 1
+    assert s.count_chunks_without_repo() == 0
+
+
+def test_backfill_refuses_when_paths_dont_match(tmp_path: Path) -> None:
+    """Auto-backfill is a no-op when the target_repo changed since indexing."""
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+    s.upsert_chunk(
+        _make_chunk("sha256:o", "GhostFile.java", "x"),
+        _vec(0), "m", 4, repo_id=None,
+    )
+    s.commit()
+    rid = s.register_repo(_identity("github.com/x/y"))
+    # tmp_path has no GhostFile.java → sanity check fails.
+    n = s.backfill_chunks_to_repo(rid, sample_root=tmp_path)
+    assert n == 0
+    assert s.count_chunks_without_repo() == 1
