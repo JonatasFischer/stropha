@@ -1,7 +1,7 @@
 [project]
-name = "mimoria-rag"
-version = "0.0.1"
-description = "RAG system over the Mimoria codebase, exposed to LLM clients via MCP."
+name = "stropha"
+version = "0.1.0"
+description = "RAG indexer for codebases, exposed to LLM clients via the Model Context Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [project.scripts]
-mimoria-rag = "mimoria_rag.cli:app"
-mimoria-rag-mcp = "mimoria_rag.server:main"
+stropha = "stropha.cli:app"
+stropha-mcp = "stropha.server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -42,7 +42,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mimoria_rag"]
+packages = ["src/stropha"]
 
 [tool.ruff]
 line-length = 100

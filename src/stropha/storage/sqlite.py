@@ -220,7 +220,7 @@ class Storage:
         if stored_dim != self._dim:
             raise StorageError(
                 f"Index was built with dim={stored_dim} but current embedder uses dim={self._dim}. "
-                f"Run `mimoria-rag reindex --force` to rebuild."
+                f"Run `stropha index --rebuild` to rebuild."
             )
 
     # ----- writes -----

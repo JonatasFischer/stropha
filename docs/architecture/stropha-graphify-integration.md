@@ -3,23 +3,23 @@
 > **Status:** Proposed
 > **Versão:** 1.0
 > **Data:** 2026-05-14
-> **Audiência:** maintainers do projeto `mimoria-rag` e agentes LLM operando-o.
+> **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
 > **Documentos relacionados:**
-> - `docs/architecture/rag-system.md` (spec mestre — §3.5 symbol graph, §6.3.5 query routing, §8 atualização incremental, §9.2 MCP tools)
+> - `docs/architecture/stropha-system.md` (spec mestre — §3.5 symbol graph, §6.3.5 query routing, §8 atualização incremental, §9.2 MCP tools)
 > - `CLAUDE.md` (estado vivo da implementação)
 
 ---
 
 ## 0. TL;DR
 
-Integrar o output do [graphify](https://github.com/safishamsi/graphify) (`graphify-out/graph.json`) ao `mimoria-rag` para entregar a Phase 2 §3.5 do spec mestre (symbol graph + `find_callers` / `find_tests_for` / `trace_feature`) sem reimplementar 5k linhas de extração AST + LLM. Acoplamento opcional: se o arquivo não existir, os tools simplesmente não aparecem no `tools/list` do MCP server.
+Integrar o output do [graphify](https://github.com/safishamsi/graphify) (`graphify-out/graph.json`) ao `stropha` para entregar a Phase 2 §3.5 do spec mestre (symbol graph + `find_callers` / `find_tests_for` / `trace_feature`) sem reimplementar 5k linhas de extração AST + LLM. Acoplamento opcional: se o arquivo não existir, os tools simplesmente não aparecem no `tools/list` do MCP server.
 
 A integração tem **três níveis sobrepostos** (taxonomia em §4.7):
 1. **Mirror relacional (L1)** — tabelas SQLite com índices B-tree para traversal estrutural via tools dedicados (`find_callers`, etc.).
 2. **Augmentation lexical (L2, default)** — labels de nó / community entram no documento FTS5 dos chunks correspondentes, melhorando recall do `search_code` existente sem custo recorrente.
 3. *(opt-in)* **Indexação semântica (L3)** — embeddings dos node labels e community summaries entram numa virtual table sqlite-vec separada, fundida via 4ª stream RRF. Disponível para usuários sem restrição de custo de embedding.
 
-Como segundo eixo: um git hook **post-commit em background detached** que mantém ambos (graphify graph + RAG SQLite index) atualizados após cada commit, sem bloquear o terminal. Instalável via `mimoria-rag hook install --target <repo>`. Skippa rebases e respeita kill-switch via env var.
+Como segundo eixo: um git hook **post-commit em background detached** que mantém ambos (graphify graph + RAG SQLite index) atualizados após cada commit, sem bloquear o terminal. Instalável via `stropha hook install --target <repo>`. Skippa rebases e respeita kill-switch via env var.
 
 Custo estimado de implementação: **4 a 6 dias de trabalho**, distribuído em quatro entregas independentes (L2 incluído por default; L3 opt-in adiciona ~0.5 dia se ativado). Zero custo recorrente de API quando rodando com embedder local — o que move o cálculo de tradeoff em favor de níveis mais profundos de integração (ver ADR-008).
 
@@ -59,7 +59,7 @@ O graphify (`pip install graphifyy`, MIT, ativo) já produz exatamente o grafo n
 - Roda incrementalmente sem LLM via `graphify update` (custo zero por execução)
 - Já tem MCP server próprio (`graphify ... --mcp`), mas focado em graph traversal, não em retrieval
 
-A integração é **complementar, não competitiva**: o graphify resolve a camada estrutural; o mimoria-rag continua resolvendo a camada semântica + lexical.
+A integração é **complementar, não competitiva**: o graphify resolve a camada estrutural; o stropha continua resolvendo a camada semântica + lexical.
 
 ### 1.4 Posicionamento na roadmap original
 
@@ -77,14 +77,14 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 
 1. **OBJ-1**: Carregar `graphify-out/graph.json` em tabelas SQLite do índice, joinable com `chunks` por `(rel_path, start_line)`.
 2. **OBJ-2**: Expor 3 novos tools MCP — `find_callers`, `find_related`, `get_community` — condicionais à presença do grafo.
-3. **OBJ-3**: Instalar git post-commit hook que atualiza graphify + RAG em background, via `mimoria-rag hook install --target <repo>`.
+3. **OBJ-3**: Instalar git post-commit hook que atualiza graphify + RAG em background, via `stropha hook install --target <repo>`.
 4. **OBJ-4**: O hook NUNCA bloqueia o commit; falhas vão para log e métricas, não para o terminal do usuário.
-5. **OBJ-5**: A integração é estritamente opcional. `mimoria-rag` continua funcionando sem o graphify.
+5. **OBJ-5**: A integração é estritamente opcional. `stropha` continua funcionando sem o graphify.
 
 ### 2.2 Objetivos secundários (SHOULD)
 
 1. **OBJ-6**: Tool opcional `find_rationale` exposto quando edges `rationale_for` existem (>0 no grafo).
-2. **OBJ-7**: CLI `mimoria-rag hook status` para inspeção e `mimoria-rag hook uninstall` para remoção limpa.
+2. **OBJ-7**: CLI `stropha hook status` para inspeção e `stropha hook uninstall` para remoção limpa.
 3. **OBJ-8**: Detectar `core.hooksPath` para coexistir com husky/lefthook caso adotados no futuro.
 
 ### 2.3 Não-objetivos (explicitamente fora)
@@ -119,7 +119,7 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 │                            DEV / AGENT                               │
 │                                                                      │
 │  $ git commit -m "…"           (no Mimoria)                          │
-│  $ mimoria-rag hook install    (uma vez)                             │
+│  $ stropha hook install    (uma vez)                             │
 │  Claude Code → MCP tools       (durante sessão)                      │
 └─────────────────────────────────┬────────────────────────────────────┘
                                   │
@@ -143,15 +143,15 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
                                               │   get_community  ◄───┼─ NEW
                                               │   find_rationale ◄───┼─ NEW (opt)
                                               │                      │
-                                              │  ~/.mimoria-rag/     │
+                                              │  ~/.stropha/     │
                                               │    index.db          │
                                               └──────────────────────┘
 ```
 
-### 3.2 Visão C4 — Container (mimoria-rag interno)
+### 3.2 Visão C4 — Container (stropha interno)
 
 ```
-┌────────────────────────────── mimoria-rag (Python) ─────────────────────────────┐
+┌────────────────────────────── stropha (Python) ─────────────────────────────┐
 │                                                                                 │
 │  cli.py ──┬──► commands: index, search, stats, hook (install/status/uninstall)  │
 │           │                                                                     │
@@ -186,21 +186,21 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 git commit ─►  .git/hooks/post-commit
                   │
                   ├─ skip if rebase/merge/cherry-pick/empty
-                  ├─ skip if MIMORIA_RAG_HOOK_SKIP=1
-                  ├─ skip if toplevel ≠ RAG_TARGET_REPO
+                  ├─ skip if STROPHA_HOOK_SKIP=1
+                  ├─ skip if toplevel ≠ STROPHA_TARGET_REPO
                   │
                   └─ nohup detached (commit returns) ──►
-                         flock /tmp/mimoria-rag-hook.lock
+                         flock /tmp/stropha-hook.lock
                             │
                             ├─ graphify update <toplevel> --no-cluster
                             │   └─ refreshes graphify-out/graph.json (AST only)
                             │
-                            ├─ mimoria-rag index
+                            ├─ stropha index
                             │   └─ walks files, skip-fresh handles unchanged chunks
                             │   └─ if graphify-out/graph.json modified since last load,
                             │      reload into SQLite (graph_nodes, graph_edges)
                             │
-                            └─ log → ~/.cache/mimoria-rag-hook.log
+                            └─ log → ~/.cache/stropha-hook.log
 ```
 
 **Fluxo B — agent invoca `find_callers`**
@@ -346,9 +346,9 @@ def load(self, confidence_filter=...):
 Configurável via env var:
 
 ```
-RAG_GRAPH_CONFIDENCE=EXTRACTED         # default
-RAG_GRAPH_CONFIDENCE=EXTRACTED,INFERRED  # opt-in noise
-RAG_GRAPH_CONFIDENCE=*                 # tudo, inclusive AMBIGUOUS
+STROPHA_GRAPH_CONFIDENCE=EXTRACTED         # default
+STROPHA_GRAPH_CONFIDENCE=EXTRACTED,INFERRED  # opt-in noise
+STROPHA_GRAPH_CONFIDENCE=*                 # tudo, inclusive AMBIGUOUS
 ```
 
 ### 4.4 Detecção de staleness
@@ -361,7 +361,7 @@ Três fontes de truth:
 
 O loader é stale quando `graph.json` mtime > `meta.graphify_loaded_at`. O `IndexPipeline.run()` chama `loader.load()` automaticamente se stale.
 
-O agent vê via `rag://stats`:
+O agent vê via `stropha://stats`:
 
 ```jsonc
 {
@@ -416,11 +416,11 @@ def augment_fts_with_graph(self) -> int:
 
 **Por que vale**: queries que mencionam "FsrsCalculator" ou termos da comunidade (ex.: "review", "stability", "rating" de Community 18) ganham match em chunks que conteriam só a definição mas não esses tokens explicitamente.
 
-**Toggle**: `RAG_GRAPH_FTS_AUGMENT=1` (default `1`). Setando `0`, pula esta etapa — útil quando o grafo está corrompido ou o usuário quer comparar A/B.
+**Toggle**: `STROPHA_GRAPH_FTS_AUGMENT=1` (default `1`). Setando `0`, pula esta etapa — útil quando o grafo está corrompido ou o usuário quer comparar A/B.
 
 ### 4.6 Indexação semântica (L3 — opt-in)
 
-Quando `RAG_GRAPH_VEC_AUGMENT=1`, o loader também:
+Quando `STROPHA_GRAPH_VEC_AUGMENT=1`, o loader também:
 
 1. **Embebe cada `node.label`** (ou `label + community summary` quando o node é hub de comunidade) usando o `Embedder` ativo
 2. **Persiste em virtual table separada** `vec_graph_nodes` dimensionada pelo embedder atual
@@ -464,8 +464,8 @@ Para evitar ambiguidade, esta spec adota a seguinte nomenclatura interna:
 |---|---|---|---|
 | **L0** | Consumo puro (parse JSON on-demand) | ✗ rejeitado | n/a — inviável performance |
 | **L1** | Mirror relacional + B-tree indexes | ✓ implícito | sempre quando grafo presente |
-| **L2** | L1 + augmentation FTS5 com node/community labels | ✓ default | `RAG_GRAPH_FTS_AUGMENT=0` desliga |
-| **L3** | L2 + embeddings dos nodes (4ª stream RRF) | ✗ opt-in | `RAG_GRAPH_VEC_AUGMENT=1` ativa |
+| **L2** | L1 + augmentation FTS5 com node/community labels | ✓ default | `STROPHA_GRAPH_FTS_AUGMENT=0` desliga |
+| **L3** | L2 + embeddings dos nodes (4ª stream RRF) | ✗ opt-in | `STROPHA_GRAPH_VEC_AUGMENT=1` ativa |
 | **L4** | L3 + ranking signals adicionais (centralidade, community boost) | ✗ futuro | n/a — Phase 3+ |
 
 Os níveis são **acumulativos**: L3 implica L2 implica L1. Desativar um nível nunca quebra o anterior.
@@ -656,11 +656,11 @@ A checagem acontece no lifespan do FastMCP, antes de `tools/list` responder. Se 
 
 ```bash
 #!/bin/sh
-# mimoria-rag-hook-start v=1
-# Generated by `mimoria-rag hook install`. Do not edit between markers.
+# stropha-hook-start v=1
+# Generated by `stropha hook install`. Do not edit between markers.
 
 # --- 1. Skip conditions -------------------------------------------------------
-[ "${MIMORIA_RAG_HOOK_SKIP:-0}" = "1" ] && exit 0
+[ "${STROPHA_HOOK_SKIP:-0}" = "1" ] && exit 0
 
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
 [ -d "$GIT_DIR/rebase-merge" ]      && exit 0
@@ -676,8 +676,8 @@ CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only H
 [ -z "$CHANGED" ] && exit 0
 
 # --- 2. Detached background run ----------------------------------------------
-LOG="${HOME}/.cache/mimoria-rag-hook.log"
-LOCK="/tmp/mimoria-rag-hook-$(echo "$TOPLEVEL" | md5).lock"
+LOG="${HOME}/.cache/stropha-hook.log"
+LOCK="/tmp/stropha-hook-$(echo "$TOPLEVEL" | md5).lock"
 mkdir -p "$(dirname "$LOG")"
 
 echo "[$(date -u +%FT%TZ)] commit $(git rev-parse --short HEAD) — launching refresh" >> "$LOG"
@@ -686,30 +686,30 @@ nohup sh -c "
     # Prevent overlapping runs (commit storm during rebase squash, etc.)
     exec 9>'$LOCK'
     if ! flock -n 9; then
-        echo '[mimoria-rag-hook] another refresh running, skipping' >> '$LOG'
+        echo '[stropha-hook] another refresh running, skipping' >> '$LOG'
         exit 0
     fi
 
-    timeout '${MIMORIA_RAG_HOOK_TIMEOUT:-600}' sh -c '
+    timeout '${STROPHA_HOOK_TIMEOUT:-600}' sh -c '
         # graphify update (AST-only, no API key needed)
         if command -v graphify >/dev/null; then
             if [ -f \"$TOPLEVEL/graphify-out/graph.json\" ]; then
                 graphify update \"$TOPLEVEL\" --no-cluster
             else
-                echo \"[mimoria-rag-hook] graphify-out missing; skipping graphify update\" >&2
-                echo \"[mimoria-rag-hook] run \\\"graphify .\\\" inside $TOPLEVEL once to bootstrap\" >&2
+                echo \"[stropha-hook] graphify-out missing; skipping graphify update\" >&2
+                echo \"[stropha-hook] run \\\"graphify .\\\" inside $TOPLEVEL once to bootstrap\" >&2
             fi
         fi
 
-        # mimoria-rag index (incremental via chunk_is_fresh skip)
-        __RAG_CMD__
-    ' || echo '[mimoria-rag-hook] failed (exit $?)' >> '$LOG'
+        # stropha index (incremental via chunk_is_fresh skip)
+        __STROPHA_CMD__
+    ' || echo '[stropha-hook] failed (exit $?)' >> '$LOG'
 " > "$LOG" 2>&1 < /dev/null &
 disown 2>/dev/null || true
-# mimoria-rag-hook-end
+# stropha-hook-end
 ```
 
-`__INSTALL_TARGET__` e `__RAG_CMD__` são substituídos pelo `hook install` no momento da escrita (atomic write via tmp file + rename).
+`__INSTALL_TARGET__` e `__STROPHA_CMD__` são substituídos pelo `hook install` no momento da escrita (atomic write via tmp file + rename).
 
 ### 6.2 Composição com hooks existentes
 
@@ -722,11 +722,11 @@ O hook NÃO sobrescreve `.git/hooks/post-commit` se já existir. Em vez disso:
    ```
    ⚠ graphify post-commit hook detectado.
    Este script já roda `graphify update`; manter ambos causa duplicação.
-   Recomendado: `graphify hook uninstall && mimoria-rag hook install --target …`.
+   Recomendado: `graphify hook uninstall && stropha hook install --target …`.
    Continuar mesmo assim? [y/N]
    ```
 
-Markers usados: `# mimoria-rag-hook-start` e `# mimoria-rag-hook-end`. O `v=1` na linha de start permite migrações futuras detectáveis.
+Markers usados: `# stropha-hook-start` e `# stropha-hook-end`. O `v=1` na linha de start permite migrações futuras detectáveis.
 
 ### 6.3 Detecção de `core.hooksPath`
 
@@ -764,37 +764,37 @@ Conforme decisão registrada ADR-005 (§17): warning ao stderr, prossegue com o 
 Visível no terminal apenas na primeira vez (post-commit imprime no log, mas o stderr também é visível porque `nohup` herda stderr até detach). Mensagem one-shot:
 
 ```
-[mimoria-rag-hook] graphify-out missing — skipping graphify update
-[mimoria-rag-hook] run `graphify .` inside /path/to/mimoria once to bootstrap (one-time, may cost LLM tokens)
+[stropha-hook] graphify-out missing — skipping graphify update
+[stropha-hook] run `graphify .` inside /path/to/mimoria once to bootstrap (one-time, may cost LLM tokens)
 ```
 
 ### 6.5 Kill-switch & overrides
 
 | Env var | Efeito |
 |---|---|
-| `MIMORIA_RAG_HOOK_SKIP=1` | Hook não roda. Útil para `git rebase -i` longos. |
-| `MIMORIA_RAG_HOOK_TIMEOUT=600` | Timeout total em segundos (default 600 = 10 min). |
-| `MIMORIA_RAG_HOOK_LOG=/tmp/foo.log` | Override do log path. Default: `~/.cache/mimoria-rag-hook.log`. |
-| `RAG_GRAPH_CONFIDENCE=...` | Override de filtro de confiança no loader. |
+| `STROPHA_HOOK_SKIP=1` | Hook não roda. Útil para `git rebase -i` longos. |
+| `STROPHA_HOOK_TIMEOUT=600` | Timeout total em segundos (default 600 = 10 min). |
+| `STROPHA_HOOK_LOG=/tmp/foo.log` | Override do log path. Default: `~/.cache/stropha-hook.log`. |
+| `STROPHA_GRAPH_CONFIDENCE=...` | Override de filtro de confiança no loader. |
 
 ---
 
 ## 7. CLI surface
 
-### 7.1 Novo subcomando: `mimoria-rag hook`
+### 7.1 Novo subcomando: `stropha hook`
 
 ```
-mimoria-rag hook install   [--target <repo>] [--force]
-mimoria-rag hook uninstall [--target <repo>]
-mimoria-rag hook status    [--target <repo>]
+stropha hook install   [--target <repo>] [--force]
+stropha hook uninstall [--target <repo>]
+stropha hook status    [--target <repo>]
 ```
 
 **`install`**:
-- Default `target` = `$RAG_TARGET_REPO` ou cwd
+- Default `target` = `$STROPHA_TARGET_REPO` ou cwd
 - Resolve `hooks_dir` respeitando `core.hooksPath`
 - Escreve / atualiza bloco entre markers (atomic via tmp file + rename)
 - Garante `chmod +x` no script final
-- Imprime instruções de teste: `git commit --allow-empty -m "test hook" && tail -f ~/.cache/mimoria-rag-hook.log`
+- Imprime instruções de teste: `git commit --allow-empty -m "test hook" && tail -f ~/.cache/stropha-hook.log`
 - `--force`: silencia o prompt de confirmação quando graphify-hook existir
 
 **`uninstall`**:
@@ -808,14 +808,14 @@ mimoria-rag hook status    [--target <repo>]
   Hook file:         /Users/jonatas/sources/mimoria/.git/hooks/post-commit
   Installed:         yes (v=1, installed at 2026-05-14T13:00:00Z)
   Graphify cohabit:  no
-  Log file:          ~/.cache/mimoria-rag-hook.log (3 entries, last 2026-05-14T13:42:11Z)
+  Log file:          ~/.cache/stropha-hook.log (3 entries, last 2026-05-14T13:42:11Z)
   Last refresh:      success (took 7.2s)
   ```
 
-### 7.2 Novo flag em `mimoria-rag index`
+### 7.2 Novo flag em `stropha index`
 
 ```
-mimoria-rag index [--rebuild] [--refresh-graph]
+stropha index [--rebuild] [--refresh-graph]
 ```
 
 `--refresh-graph`: força reload de `graphify-out/graph.json` mesmo se o loader não detectar staleness. Útil para corrigir estado inconsistente sem precisar rebuild completo.
@@ -824,18 +824,18 @@ mimoria-rag index [--rebuild] [--refresh-graph]
 
 ```bash
 # --- Graphify integration (optional) ---
-# Path to graphify-out/. Defaults to <RAG_TARGET_REPO>/graphify-out.
-# RAG_GRAPHIFY_OUT=
+# Path to graphify-out/. Defaults to <STROPHA_TARGET_REPO>/graphify-out.
+# STROPHA_GRAPHIFY_OUT=
 
 # Confidence filter for graph edges loaded into SQLite.
 # Default: EXTRACTED only (highest precision). Comma-separated.
-# RAG_GRAPH_CONFIDENCE=EXTRACTED
+# STROPHA_GRAPH_CONFIDENCE=EXTRACTED
 
 # --- Hook automation ---
 # Skip the post-commit hook for this run.
-# export MIMORIA_RAG_HOOK_SKIP=1
+# export STROPHA_HOOK_SKIP=1
 # Timeout (seconds) for the background refresh.
-# export MIMORIA_RAG_HOOK_TIMEOUT=600
+# export STROPHA_HOOK_TIMEOUT=600
 ```
 
 ---
@@ -851,7 +851,7 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 - O hook **SHOULD** detectar `core.hooksPath` e respeitar.
 - Os tools `find_*` **MUST NOT** aparecer em `tools/list` quando o grafo não está carregado.
 - Toda response dos tools **SHOULD** carregar `provenance` indicando a fonte do dado.
-- O loader **MAY** filtrar edges INFERRED por default (decisão de runtime via `RAG_GRAPH_CONFIDENCE`).
+- O loader **MAY** filtrar edges INFERRED por default (decisão de runtime via `STROPHA_GRAPH_CONFIDENCE`).
 
 ---
 
@@ -903,9 +903,9 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 |---|---|
 | Atualizar `CLAUDE.md` com estado do graph integration + hook |
 | Atualizar `README.md` com seção "Connecting graphify" |
-| Atualizar `.env.example` com novas env vars (`RAG_GRAPHIFY_OUT`, `RAG_GRAPH_CONFIDENCE`, `RAG_GRAPH_FTS_AUGMENT`, `RAG_GRAPH_VEC_AUGMENT`) |
+| Atualizar `.env.example` com novas env vars (`STROPHA_GRAPHIFY_OUT`, `STROPHA_GRAPH_CONFIDENCE`, `STROPHA_GRAPH_FTS_AUGMENT`, `STROPHA_GRAPH_VEC_AUGMENT`) |
 | Atualizar `.mcp.example.json` se mudar args (não deve) |
-| Atualizar `docs/architecture/rag-system.md` §3.5, §8 com referências a este doc |
+| Atualizar `docs/architecture/stropha-system.md` §3.5, §8 com referências a este doc |
 
 ### Fase 1.5e — L2: FTS5 augmentation com graph data (0.5 dia)
 
@@ -915,7 +915,7 @@ Adiciona §4.5 — labels de nó/community entram no documento FTS5 dos chunks c
 |---|---|---|
 | `Storage.augment_fts_with_graph()` — UPDATE em FTS5 com JOIN graph_nodes ↔ chunks | `storage/sqlite.py` | TODO |
 | Hook em `IndexPipeline.run()`: chamar augment_fts após loader.load() | `ingest/pipeline.py` | TODO |
-| Toggle via `RAG_GRAPH_FTS_AUGMENT` (default `1`) | `config.py` | TODO |
+| Toggle via `STROPHA_GRAPH_FTS_AUGMENT` (default `1`) | `config.py` | TODO |
 | Idempotência: re-augment não duplica tokens (UPDATE em vez de APPEND com guard) | `storage/sqlite.py` | TODO |
 | Test: chunk com node match recebe extras; sem match não muda | `tests/unit/test_fts_augment.py` | TODO |
 | Quality test: BM25 query por community-term match chunk-related | `tests/eval/golden/lexical.jsonl` | TODO |
@@ -934,7 +934,7 @@ Adiciona §4.6 — vetores semânticos dos nodes do grafo entram numa 4ª stream
 | `embed_graph_nodes()` no loader, com skip-fresh por `(node, model, label_hash)` | `ingest/graphify_loader.py` | TODO |
 | `Storage.search_graph_dense()` — análogo a `search_dense` mas sobre `vec_graph_nodes` | `storage/sqlite.py` | TODO |
 | `SearchEngine.search()` — adicionar 4ª stream condicional ao toggle | `retrieval/search.py` | TODO |
-| Toggle via `RAG_GRAPH_VEC_AUGMENT` (default `0`) | `config.py` | TODO |
+| Toggle via `STROPHA_GRAPH_VEC_AUGMENT` (default `0`) | `config.py` | TODO |
 | Test: search com toggle on/off compara resultados; idempotência do embed | `tests/unit/test_graph_vec.py` | TODO |
 | A/B no golden dataset: NDCG@10 com/sem L3 | `tests/eval/test_graph_vec_quality.py` | TODO |
 
@@ -962,7 +962,7 @@ Adiciona §4.6 — vetores semânticos dos nodes do grafo entram numa 4ª stream
 - `test_phase2_canonical.py`:
   - `find_callers("FsrsCalculator.calculateNewStability")` → top hit é `FsrsAlgorithm.recalc` ou similar.
   - `get_community("FsrsCalculator")` → contém ≥3 outros nós Fsrs-relacionados.
-  - `find_rationale("FsrsCalculator")` → contém path para `docs/study-flow.md` ou `rag-system.md`.
+  - `find_rationale("FsrsCalculator")` → contém path para `docs/study-flow.md` ou `stropha-system.md`.
 
 ### 10.4 Golden dataset
 
@@ -987,11 +987,11 @@ Roda em CI; PR é bloqueada se ≥2 entradas regredirem.
 Script `scripts/smoke-hook.sh`:
 
 ```bash
-mimoria-rag hook install --target /Users/jonatas/sources/mimoria
+stropha hook install --target /Users/jonatas/sources/mimoria
 ( cd /Users/jonatas/sources/mimoria && git commit --allow-empty -m "smoke" )
 sleep 30   # tempo para refresh background
-tail -50 ~/.cache/mimoria-rag-hook.log
-mimoria-rag hook status
+tail -50 ~/.cache/stropha-hook.log
+stropha hook status
 ```
 
 ---
@@ -1068,7 +1068,7 @@ def _validate_source_file(self, raw: str, repo: Path) -> str | None:
 
 ### 12.3 Logs
 
-`~/.cache/mimoria-rag-hook.log` contém commit SHAs e paths, NUNCA conteúdo de arquivo. Rotação manual por enquanto; rotação automática via `logrotate` é tarefa Phase 3.
+`~/.cache/stropha-hook.log` contém commit SHAs e paths, NUNCA conteúdo de arquivo. Rotação manual por enquanto; rotação automática via `logrotate` é tarefa Phase 3.
 
 ---
 
@@ -1115,10 +1115,10 @@ O background pode levar 5–600s; usuário não nota.
 | `graphify-out/graph.json` ausente | Loader é no-op; tools `find_*` não aparecem em `tools/list`; MCP server funciona normalmente |
 | `graph.json` corrompido (JSON inválido) | Loader log warning + raise; index falha; usuário precisa fixar manualmente |
 | `graph.json` com schema desconhecido (graphify nova versão) | Loader ignora campos extras; emite warning; segue |
-| Hook: graphify ausente do PATH | Pula etapa graphify; segue para `mimoria-rag index` |
+| Hook: graphify ausente do PATH | Pula etapa graphify; segue para `stropha index` |
 | Hook: `flock` ocupado (commit storm) | Skippa imediatamente; log "skipping due to lock"; commit seguinte triggera refresh |
 | Hook: timeout estourado | Kill via `timeout` builtin; log "timeout"; estado fica consistente porque tudo é idempotente |
-| Hook: mimoria-rag não está instalado | Falha gracefully; warning no log; commit já foi |
+| Hook: stropha não está instalado | Falha gracefully; warning no log; commit já foi |
 | `core.hooksPath` aponta para caminho inválido | Install falha com mensagem clara; não escreve |
 
 ---
@@ -1144,14 +1144,14 @@ graphify extract . --backend gemini                  # mesmo, controlado
 graphify update . --no-cluster                       # AST-only, gratuito
 
 # 2. Build do índice RAG (já carrega o grafo recém-criado, L1 + L2 default)
-uv run --directory ~/sources/rag mimoria-rag index --rebuild
+uv run --directory ~/sources/rag stropha index --rebuild
 
 # 3. Instalar o hook para manter ambos frescos
-uv run --directory ~/sources/rag mimoria-rag hook install --target $(pwd)
+uv run --directory ~/sources/rag stropha hook install --target $(pwd)
 
 # 4. Sanity check
-uv run --directory ~/sources/rag mimoria-rag hook status
-uv run --directory ~/sources/rag mimoria-rag stats   # mostra contagem do grafo
+uv run --directory ~/sources/rag stropha hook status
+uv run --directory ~/sources/rag stropha stats   # mostra contagem do grafo
 ```
 
 ### 15.3 Upgrade de embedder local (lever de qualidade — recomendado para usuários local-only)
@@ -1162,25 +1162,25 @@ Per ADR-008, o gargalo de qualidade hoje é o embedder, não falta de mais vetor
 # Em .env, trocar o modelo local. Modelos sugeridos por escala:
 
 # Médio (440 MB, bom equilíbrio)
-RAG_LOCAL_EMBED_MODEL=BAAI/bge-base-en-v1.5
+STROPHA_LOCAL_EMBED_MODEL=BAAI/bge-base-en-v1.5
 
 # Grande (1.3 GB, top open-source MTEB)
-RAG_LOCAL_EMBED_MODEL=mixedbread-ai/mxbai-embed-large-v1
+STROPHA_LOCAL_EMBED_MODEL=mixedbread-ai/mxbai-embed-large-v1
 
 # Code-specialized (550 MB, otimizado para código fonte)
-RAG_LOCAL_EMBED_MODEL=nomic-ai/nomic-embed-code
+STROPHA_LOCAL_EMBED_MODEL=nomic-ai/nomic-embed-code
 
 # Multi-lingual + multi-functional (2.3 GB, overkill mas SOTA)
-RAG_LOCAL_EMBED_MODEL=BAAI/bge-m3
+STROPHA_LOCAL_EMBED_MODEL=BAAI/bge-m3
 
 # Após mudar:
-uv run mimoria-rag index --rebuild   # reindex completo (dim mudou; storage detecta)
+uv run stropha index --rebuild   # reindex completo (dim mudou; storage detecta)
 ```
 
 **Trade-offs práticos**:
 - Modelo maior = mais RAM no MCP server lifespan (pode dobrar/triplicar o footprint)
 - Modelo maior = embedding por chunk fica de ~2ms para ~10–20 ms (CPU aarch64)
-- `mimoria-rag index` num repo grande passa de ~3 min para ~10–15 min com modelo grande
+- `stropha index` num repo grande passa de ~3 min para ~10–15 min com modelo grande
 - A queries do MCP ganham ~5–15 ms de latência (cabe dentro do budget de p95 ≤ 500 ms da spec mestre §1.3)
 
 **Quando vale L3 vs upgrade de embedder**: o upgrade é o single-hop com maior ROI. L3 é incremental sobre isso. Se você tem orçamento computacional para os dois, faça os dois (upgrade primeiro, L3 depois com A/B). Se só pode escolher um, escolha o upgrade.
@@ -1191,14 +1191,14 @@ Se a integração causar problemas, três níveis de desligamento:
 
 ```bash
 # 1. Desligar o hook (preserva schema, preserva tools)
-mimoria-rag hook uninstall --target ~/sources/mimoria
+stropha hook uninstall --target ~/sources/mimoria
 
 # 2. Desligar os tools (preserva schema, preserva grafo carregado)
 #    via env var no .mcp.json:
-#    "RAG_GRAPH_TOOLS_DISABLED": "1"
+#    "STROPHA_GRAPH_TOOLS_DISABLED": "1"
 
 # 3. Limpar tabelas do grafo (mantém chunks/vectors)
-sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
+sqlite3 ~/.stropha/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
 ```
 
 ---
@@ -1236,14 +1236,14 @@ sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_node
 ### ADR-001 — Fonte de verdade do grafo
 
 **Contexto**: precisamos de symbol graph; graphify produz um adequado.
-**Decisão**: graphify é fonte de verdade; mimoria-rag espelha (read-only) em SQLite.
+**Decisão**: graphify é fonte de verdade; stropha espelha (read-only) em SQLite.
 **Consequência**: dependência opcional, mas única; se graphify mudar o schema do `graph.json`, ajustamos o loader.
 
 ### ADR-002 — Política de confidence default
 
 **Contexto**: graphify produz EXTRACTED (68%) e INFERRED (32%).
 **Decisão**: default carrega apenas EXTRACTED.
-**Justificativa**: 32% de INFERRED gera ruído visível (visto em "Surprising Connections" do GRAPH_REPORT.md do Mimoria — ex. "StudyService references Vue Unit Test Plan"). Usuário avançado pode opt-in via `RAG_GRAPH_CONFIDENCE`.
+**Justificativa**: 32% de INFERRED gera ruído visível (visto em "Surprising Connections" do GRAPH_REPORT.md do Mimoria — ex. "StudyService references Vue Unit Test Plan"). Usuário avançado pode opt-in via `STROPHA_GRAPH_CONFIDENCE`.
 **Trade-off**: perdemos 45 edges `rationale_for` por default — mas tratamos esta relação como caso especial via tool dedicado `find_rationale` (que retorna sem filtro de confidence).
 
 ### ADR-003 — Hook type: post-commit (não pre-commit)
@@ -1267,7 +1267,7 @@ sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_node
 ### ADR-006 — Install delivery: subcommand do CLI
 
 **Contexto**: alternativa era script `.sh` standalone documentado.
-**Decisão**: subcomando `mimoria-rag hook install`.
+**Decisão**: subcomando `stropha hook install`.
 **Razão**: simetria com `graphify hook install`; cobre status/uninstall/upgrade idempotente; descobrível via `--help`; testável.
 
 ### ADR-007 — Single target per install (v1)
@@ -1282,7 +1282,7 @@ sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_node
 
 **Decisão**:
 - **L2 vira default** (era opt-in implícito por não-existência). FTS5 augmentation custa ~ms por chunk; benefício de recall lexical é alto e bem documentado em sistemas hybrid retrieval.
-- **L3 vira opt-in real** via `RAG_GRAPH_VEC_AUGMENT=1`. Documentado mas desligado por default porque adiciona dimensão a fusion (mais ruído potencial) e requer validação via golden dataset.
+- **L3 vira opt-in real** via `STROPHA_GRAPH_VEC_AUGMENT=1`. Documentado mas desligado por default porque adiciona dimensão a fusion (mais ruído potencial) e requer validação via golden dataset.
 - **L4 fica fora desta spec** — entra na Phase 3 quando golden dataset existir.
 
 **Justificativa**:
@@ -1305,8 +1305,8 @@ sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_node
 | Risco | Probabilidade | Impacto | Mitigação |
 |---|---|---|---|
 | Graphify muda schema do `graph.json` em release futura | Média | Médio | Pin de versão min/max em README; loader tolera campos desconhecidos com warning |
-| Graphify deprecado pelo autor | Baixa | Alto | A camada do mimoria-rag fica intacta (tools só ficam off); spec mestre §3.5 ainda pode ser implementada nativamente |
-| INFERRED edges enganam usuário que ativa `RAG_GRAPH_CONFIDENCE=*` | Média | Médio | Default seguro; documentar trade-off no help |
+| Graphify deprecado pelo autor | Baixa | Alto | A camada do stropha fica intacta (tools só ficam off); spec mestre §3.5 ainda pode ser implementada nativamente |
+| INFERRED edges enganam usuário que ativa `STROPHA_GRAPH_CONFIDENCE=*` | Média | Médio | Default seguro; documentar trade-off no help |
 | Hook causa loop infinito (commit dentro do refresh trigger novo commit) | Baixa | Alto | Hook NÃO faz commit; só grava em DB externa fora do repo target |
 | `flock` indisponível no sistema (Windows nativo) | Média (não-macOS/Linux) | Médio | Hook template usa `flock` quando presente; fallback para PID file em outras plataformas |
 | Latência do `find_callers` cresce com depth=3 em grafos densos | Média | Baixo | Limite duro de `depth=3` no schema; documentar |
@@ -1318,7 +1318,7 @@ sqlite3 ~/.mimoria-rag/index.db "DELETE FROM graph_edges; DELETE FROM graph_node
 
 ### Documentos internos
 
-- `docs/architecture/rag-system.md` — spec mestre, especialmente §3.5 (symbol graph), §6.3.5 (query routing), §8 (atualização incremental), §9.2 (catálogo de tools), §16 (roadmap)
+- `docs/architecture/stropha-system.md` — spec mestre, especialmente §3.5 (symbol graph), §6.3.5 (query routing), §8 (atualização incremental), §9.2 (catálogo de tools), §16 (roadmap)
 - `CLAUDE.md` — estado vivo da implementação Phase 0/1
 
 ### Documentos externos

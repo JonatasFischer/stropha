@@ -51,10 +51,10 @@ def _recv(proc: subprocess.Popen, timeout_s: float = 10.0) -> dict:
 def test_mcp_handshake_and_tool_call(tmp_path: Path) -> None:
     """Spawn the server, initialize, list tools, call search_code."""
     # Build a tiny indexed DB so the server has something to search.
-    from mimoria_rag.config import Config
-    from mimoria_rag.embeddings.local import LocalEmbedder
-    from mimoria_rag.ingest.pipeline import IndexPipeline
-    from mimoria_rag.storage import Storage
+    from stropha.config import Config
+    from stropha.embeddings.local import LocalEmbedder
+    from stropha.ingest.pipeline import IndexPipeline
+    from stropha.storage import Storage
 
     # Build a fixture repo with one Python file.
     repo = tmp_path / "fixture"
@@ -84,13 +84,13 @@ def test_mcp_handshake_and_tool_call(tmp_path: Path) -> None:
 
     # Launch MCP server pointed at this DB and repo.
     env = os.environ.copy()
-    env["RAG_TARGET_REPO"] = str(repo)
-    env["RAG_INDEX_PATH"] = str(db_path)
-    env["RAG_LOG_LEVEL"] = "ERROR"
+    env["STROPHA_TARGET_REPO"] = str(repo)
+    env["STROPHA_INDEX_PATH"] = str(db_path)
+    env["STROPHA_LOG_LEVEL"] = "ERROR"
     env.pop("VOYAGE_API_KEY", None)  # force local fallback for determinism
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "mimoria_rag.server"],
+        [sys.executable, "-m", "stropha.server"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

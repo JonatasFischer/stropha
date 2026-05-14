@@ -920,58 +920,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mimoria-rag"
-version = "0.0.1"
-source = { editable = "." }
-dependencies = [
-    { name = "fastembed" },
-    { name = "mcp" },
-    { name = "numpy" },
-    { name = "pathspec" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-    { name = "rich" },
-    { name = "sqlite-vec" },
-    { name = "structlog" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-language-pack" },
-    { name = "typer" },
-    { name = "voyageai" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastembed", specifier = ">=0.4" },
-    { name = "mcp", specifier = ">=1.2" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "pathspec", specifier = ">=0.12" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pydantic-settings", specifier = ">=2.3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "rich", specifier = ">=13.7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "sqlite-vec", specifier = ">=0.1.6" },
-    { name = "structlog", specifier = ">=24.1" },
-    { name = "tree-sitter", specifier = ">=0.23" },
-    { name = "tree-sitter-language-pack", specifier = ">=0.10" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "voyageai", specifier = ">=0.3" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "mmh3"
 version = "5.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2035,6 +1983,58 @@ sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cde
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
 ]
+
+[[package]]
+name = "stropha"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastembed" },
+    { name = "mcp" },
+    { name = "numpy" },
+    { name = "pathspec" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "rich" },
+    { name = "sqlite-vec" },
+    { name = "structlog" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-language-pack" },
+    { name = "typer" },
+    { name = "voyageai" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastembed", specifier = ">=0.4" },
+    { name = "mcp", specifier = ">=1.2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pathspec", specifier = ">=0.12" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic-settings", specifier = ">=2.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "rich", specifier = ">=13.7" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "sqlite-vec", specifier = ">=0.1.6" },
+    { name = "structlog", specifier = ">=24.1" },
+    { name = "tree-sitter", specifier = ">=0.23" },
+    { name = "tree-sitter-language-pack", specifier = ">=0.10" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "voyageai", specifier = ">=0.3" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "structlog"

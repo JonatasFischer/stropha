@@ -18,7 +18,7 @@ from rich.table import Table
 from . import __version__
 from .config import Config
 from .embeddings import build_embedder
-from .errors import RagError
+from .errors import StrophaError
 from .ingest.pipeline import IndexPipeline
 from .logging import configure_logging, get_logger
 from .retrieval import SearchEngine
@@ -26,8 +26,8 @@ from .storage import Storage
 
 load_dotenv()
 app = typer.Typer(
-    name="mimoria-rag",
-    help="RAG over the Mimoria codebase. Phase 0 (spike).",
+    name="stropha",
+    help="stropha — index a codebase and serve it to LLM clients via MCP.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -45,7 +45,7 @@ def _load_config() -> Config:
 @app.callback()
 def _root(
     log_level: str = typer.Option(
-        None, "--log-level", help="Override RAG_LOG_LEVEL (DEBUG/INFO/WARNING)."
+        None, "--log-level", help="Override STROPHA_LOG_LEVEL (DEBUG/INFO/WARNING)."
     ),
 ) -> None:
     """Initialize logging before any subcommand runs."""
@@ -56,7 +56,7 @@ def _root(
 @app.command()
 def index(
     repo: Path = typer.Option(
-        None, "--repo", help="Target repo to index (default: RAG_TARGET_REPO)."
+        None, "--repo", help="Target repo to index (default: STROPHA_TARGET_REPO)."
     ),
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
@@ -70,7 +70,7 @@ def index(
 
     try:
         embedder = build_embedder(cfg)
-    except RagError as exc:
+    except StrophaError as exc:
         console.print(f"[red]Embedder error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     console.print(
@@ -89,7 +89,7 @@ def index(
             f"{stats.chunks_embedded} embedded · "
             f"{stats.chunks_skipped_fresh} reused"
         )
-    except RagError as exc:
+    except StrophaError as exc:
         console.print(f"[red]Indexing failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -106,7 +106,7 @@ def search(
         with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
             engine = SearchEngine(storage, embedder)
             hits = engine.search(query, top_k=top_k)
-    except RagError as exc:
+    except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -141,11 +141,11 @@ def stats() -> None:
         embedder = build_embedder(cfg)
         with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
             info = storage.stats()
-    except RagError as exc:
+    except StrophaError as exc:
         console.print(f"[red]Stats failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    console.print(f"[bold]mimoria-rag[/bold] v{__version__}")
+    console.print(f"[bold]stropha[/bold] v{__version__}")
     console.print(f"DB         : {info['db_path']}")
     console.print(f"DB size    : {info['size_bytes'] / 1024:.1f} KB")
     console.print(f"Chunks     : {info['chunks']}")
@@ -162,7 +162,7 @@ def stats() -> None:
     if len(info["models"]) > 1:
         console.print(
             "[yellow]Warning:[/yellow] index contains multiple embedding models. "
-            "Run `mimoria-rag index --rebuild` to normalize."
+            "Run `stropha index --rebuild` to normalize."
         )
 
 

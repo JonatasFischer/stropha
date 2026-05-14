@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mimoria_rag.models import SearchHit
-from mimoria_rag.retrieval.rrf import rrf_fuse
+from stropha.models import SearchHit
+from stropha.retrieval.rrf import rrf_fuse
 
 
 def _hit(chunk_id: str, rank: int) -> SearchHit:

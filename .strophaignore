@@ -58,5 +58,9 @@
 **/*.log
 
 # RAG self
-**/.mimoria-rag/**
+**/.stropha/**
 **/index.db*
+
+# Graphify output — graph.json is consumed via loader, not text-indexed.
+# manifest.json (~700KB) and cache/ast/ are graphify internals.
+**/graphify-out/**

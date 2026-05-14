@@ -122,11 +122,19 @@ def _filesystem_walk(repo: Path) -> Iterator[str]:
 
 
 def _load_ragignore(repo: Path) -> pathspec.PathSpec:
-    """Load .ragignore patterns from the target repo and from this project."""
+    """Load .strophaignore patterns from the target repo and from this project.
+
+    Both ``.strophaignore`` (preferred) and ``.ragignore`` (legacy) are
+    accepted in each location; patterns from all files merge.
+    """
     patterns: list[str] = []
-    for candidate in (repo / ".ragignore", Path(__file__).resolve().parents[3] / ".ragignore"):
-        if candidate.is_file():
-            patterns.extend(candidate.read_text().splitlines())
+    locations = [repo, Path(__file__).resolve().parents[3]]
+    filenames = (".strophaignore", ".ragignore")
+    for location in locations:
+        for name in filenames:
+            candidate = location / name
+            if candidate.is_file():
+                patterns.extend(candidate.read_text().splitlines())
     return pathspec.PathSpec.from_lines("gitignore", patterns)
 
 

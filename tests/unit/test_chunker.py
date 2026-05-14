@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mimoria_rag.ingest.chunker import Chunker
-from mimoria_rag.ingest.chunkers.base import MAX_CHARS_PER_CHUNK
-from mimoria_rag.ingest.chunkers.fallback import FallbackChunker
-from mimoria_rag.models import SourceFile
+from stropha.ingest.chunker import Chunker
+from stropha.ingest.chunkers.base import MAX_CHARS_PER_CHUNK
+from stropha.ingest.chunkers.fallback import FallbackChunker
+from stropha.models import SourceFile
 
 
 def _make_file(tmp_path: Path, name: str, content: str, language: str = "python") -> SourceFile:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mimoria_rag.ingest.walker import Walker, detect_language
+from stropha.ingest.walker import Walker, detect_language
 
 
 def test_detect_language_known() -> None:

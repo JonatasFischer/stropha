@@ -48,7 +48,7 @@ Documento de design técnico para um sistema de Retrieval-Augmented Generation (
 │  └──────────┘  └──────────────┘  └───────────┘  └────────────────┘  │
 │       │              │                  │                │           │
 │       ▼              ▼                  ▼                ▼           │
-│  .ragignore     Symbol Graph       Chunk Store      Summary Cache    │
+│  .strophaignore Symbol Graph       Chunk Store      Summary Cache    │
 │  + git diff    (call/import)        (SQLite)         (SQLite)        │
 └──────────────────────────────────────────────────────────────────────┘
                               │
@@ -105,7 +105,7 @@ A qualidade do RAG é dominada pela **qualidade da indexação**. Embedding bom 
 **Descoberta de arquivos**:
 
 - Caminhar a partir da raiz do repo (`git ls-files` é mais confiável que `find` — respeita `.gitignore` automaticamente).
-- Aplicar `.ragignore` adicional (formato igual a `.gitignore`) para excluir lockfiles, builds, fixtures binários:
+- Aplicar `.strophaignore` adicional (formato igual a `.gitignore`) para excluir lockfiles, builds, fixtures binários:
   ```
   **/target/**
   **/node_modules/**
@@ -346,7 +346,7 @@ Para Mimoria: **não recomendado na fase inicial**. Single-vector + rerank cobre
 | **Turbopuffer** | Cloud (serverless) | S3-backed, pay-per-query | Vendor lock-in | Cargas esporádicas. |
 | **Pinecone** | Cloud managed | Zero ops | Vendor lock-in, custo alto | Quando ops é proibitivo. |
 
-**Recomendação para Mimoria**: `sqlite-vec` na máquina do dev. Tudo em `~/.mimoria-rag/index.db`. Migrar para Qdrant local se passar de ~100k chunks ou exigir filtros complexos.
+**Recomendação para Mimoria**: `sqlite-vec` na máquina do dev. Tudo em `~/.stropha/index.db`. Migrar para Qdrant local se passar de ~100k chunks ou exigir filtros complexos.
 
 ### 5.2 Algoritmos de indexação aproximada (ANN)
 
@@ -631,7 +631,7 @@ MCP é o protocolo aberto da Anthropic (2024) para conectar LLMs a ferramentas/d
 Conceitos:
 
 - **Tools**: funções invocáveis (ex.: `search_code`).
-- **Resources**: dados expostos (ex.: estatísticas do índice via URI `rag://stats`).
+- **Resources**: dados expostos (ex.: estatísticas do índice via URI `stropha://stats`).
 - **Prompts**: templates parametrizados (ex.: prompt "explique o módulo X" pré-formatado).
 - **Sampling**: o servidor pode pedir ao cliente (LLM) para gerar texto. Útil para HyDE.
 
@@ -717,8 +717,8 @@ Princípios:
     }
   ],
   "resources": [
-    { "uri": "rag://stats", "description": "Estatísticas do índice (chunks, última atualização, modelo)." },
-    { "uri": "rag://files", "description": "Lista de arquivos indexados com hash." }
+    { "uri": "stropha://stats", "description": "Estatísticas do índice (chunks, última atualização, modelo)." },
+    { "uri": "stropha://files", "description": "Lista de arquivos indexados com hash." }
   ],
   "prompts": [
     { "name": "investigate-bug", "description": "Template para investigar um bug usando os tools RAG.", "arguments": [{ "name": "symptom", "required": true }] }
@@ -774,9 +774,9 @@ Padrão para `search_code`:
 **Estrutura de projeto** (sugestão):
 
 ```
-mimoria-rag/
+stropha/
 ├── pyproject.toml
-├── src/mimoria_rag/
+├── src/stropha/
 │   ├── __init__.py
 │   ├── server.py              # MCP server entry
 │   ├── tools/
@@ -812,12 +812,12 @@ mimoria-rag/
 ```json
 {
   "mcpServers": {
-    "mimoria-rag": {
+    "stropha": {
       "command": "uv",
-      "args": ["--directory", "/Users/jonatas/sources/mimoria-rag", "run", "mcp-server"],
+      "args": ["--directory", "/Users/jonatas/sources/stropha", "run", "mcp-server"],
       "env": {
         "VOYAGE_API_KEY": "${VOYAGE_API_KEY}",
-        "RAG_INDEX_PATH": "${HOME}/.mimoria-rag/index.db"
+        "STROPHA_INDEX_PATH": "${HOME}/.stropha/index.db"
       }
     }
   }
@@ -1031,12 +1031,12 @@ Append-only log: `(timestamp, user, tool, args_hash, result_hash, latency)`. Ret
 ┌────────────────────┐
 │ Claude Code        │
 │  └─ stdio ──► mcp-server (Python local)
-│                  └─ index.db (~/.mimoria-rag/)
+│                  └─ index.db (~/.stropha/)
 │                  └─ Voyage API (cloud)
 └────────────────────┘
 ```
 
-Custo: API embeddings/rerank apenas. Setup: `uv tool install mimoria-rag`.
+Custo: API embeddings/rerank apenas. Setup: `uv tool install stropha`.
 
 #### Self-hosted (time)
 
@@ -1074,7 +1074,7 @@ jobs:
     steps:
       - checkout
       - uv-install
-      - run: uv run mimoria-rag reindex --incremental --since=$LAST_INDEXED_SHA
+      - run: uv run stropha reindex --incremental --since=$LAST_INDEXED_SHA
       - upload index.db artifact
       - run evaluation gate (NDCG must not drop > 2 pts)
 ```
@@ -1083,7 +1083,7 @@ jobs:
 
 Distribuir como:
 
-- PyPI package (`pip install mimoria-rag`).
+- PyPI package (`pip install stropha`).
 - Single binary via `pyinstaller` ou `shiv` (~30 MB) para devs não-Python.
 - Docker image multi-arch (`linux/amd64`, `linux/arm64`, `darwin/arm64`).
 
@@ -1127,7 +1127,7 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 ## 16. Roadmap em fases
 
 ### Phase 0 — Spike (1 dia) ✓
-- [x] Setup repo `mimoria-rag` com `uv`.
+- [x] Setup repo `stropha` com `uv`.
 - [x] Walker + chunker dummy (split por arquivo).
 - [x] Embedding via Voyage API (com fallback local fastembed quando sem chave).
 - [x] sqlite-vec storage.
@@ -1141,7 +1141,7 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 - [x] Chunkers custom para Vue SFC (script/template/style), Markdown (heading split), Gherkin (feature/scenario).
 - [x] Chunking semântico hierárquico (skeleton de classe com nome qualificado + lista de membros; método como chunk filho com `parent_chunk_id`).
 - [x] Hybrid search com **três streams** fundidas via RRF (k=60): dense (sqlite-vec) + sparse (FTS5 BM25 com expansão CamelCase + tokens de path + symbol) + symbol-token lookup (query routing §6.3.5).
-- [x] Servidor MCP (`mimoria-rag-mcp`) sobre stdio. Tools: `search_code`, `get_symbol`, `get_file_outline`. Resource: `rag://stats`.
+- [x] Servidor MCP (`stropha-mcp`) sobre stdio. Tools: `search_code`, `get_symbol`, `get_file_outline`. Resource: `stropha://stats`.
 - [x] Template `.mcp.example.json` para Claude Code / Cursor.
 - [x] Freshness skip por chunk (re-rodar `index` num repo estável é quase instantâneo).
 - [ ] **Diferido** Reindexação incremental via `git diff` — `index --rebuild` cobre o caso de uso para Phase 1; hooks `post-commit` e soft-index em RAM vão para Phase 3.

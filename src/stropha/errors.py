@@ -3,29 +3,29 @@
 from __future__ import annotations
 
 
-class RagError(Exception):
-    """Base class for all errors raised by mimoria-rag."""
+class StrophaError(Exception):
+    """Base class for all errors raised by stropha."""
 
 
-class ConfigError(RagError):
+class ConfigError(StrophaError):
     """Invalid or missing configuration."""
 
 
-class WalkerError(RagError):
+class WalkerError(StrophaError):
     """Failure while discovering source files."""
 
 
-class ChunkerError(RagError):
+class ChunkerError(StrophaError):
     """Failure while splitting a file into chunks."""
 
 
-class EmbeddingError(RagError):
+class EmbeddingError(StrophaError):
     """Failure while computing embeddings (network, auth, model)."""
 
 
-class StorageError(RagError):
+class StorageError(StrophaError):
     """Failure in the SQLite/vec layer (schema, IO, corruption)."""
 
 
-class RetrievalError(RagError):
+class RetrievalError(StrophaError):
     """Failure during query execution."""

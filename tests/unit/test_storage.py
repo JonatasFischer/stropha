@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from mimoria_rag.errors import StorageError
-from mimoria_rag.models import Chunk
-from mimoria_rag.storage import Storage
+from stropha.errors import StorageError
+from stropha.models import Chunk
+from stropha.storage import Storage
 
 
 def _make_chunk(

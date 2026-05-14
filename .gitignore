@@ -21,7 +21,7 @@ build/
 *.db-journal
 *.db-wal
 *.db-shm
-.mimoria-rag/
+.stropha/
 index.db
 
 # Editor

@@ -1,19 +1,19 @@
 {
   "$comment": "Drop this file (renamed to .mcp.json) into the repo whose code you want Claude Code / Cursor / etc. to search. Adjust the absolute path to point at this checkout.",
   "mcpServers": {
-    "mimoria-rag": {
+    "stropha": {
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/jonatas/sources/rag",
+        "/path/to/stropha",
         "run",
-        "mimoria-rag-mcp"
+        "stropha-mcp"
       ],
       "env": {
         "VOYAGE_API_KEY": "${VOYAGE_API_KEY}",
-        "RAG_INDEX_PATH": "${HOME}/.mimoria-rag/index.db",
-        "RAG_TARGET_REPO": "${PWD}",
-        "RAG_LOG_LEVEL": "WARNING"
+        "STROPHA_INDEX_PATH": "${HOME}/.stropha/index.db",
+        "STROPHA_TARGET_REPO": "${PWD}",
+        "STROPHA_LOG_LEVEL": "WARNING"
       }
     }
   }

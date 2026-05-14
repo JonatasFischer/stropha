@@ -6,7 +6,7 @@ and exposes the Phase 1 tool surface from spec §9.2:
 - `search_code`         — hybrid retrieval (dense + BM25 + RRF).
 - `get_symbol`          — direct symbol lookup.
 - `get_file_outline`    — symbolic outline of a single file.
-- `index_stats` resource (rag://stats).
+- `index_stats` resource (stropha://stats).
 
 The server speaks stdio by default; that is the transport Claude Code, Cursor
 and friends launch automatically when configured via `.mcp.json`.
@@ -27,7 +27,7 @@ from . import __version__
 from .config import Config
 from .embeddings import build_embedder
 from .embeddings.base import Embedder
-from .errors import RagError
+from .errors import StrophaError
 from .logging import configure_logging, get_logger
 from .retrieval import SearchEngine
 from .storage import Storage
@@ -69,9 +69,9 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
 
 
 _INSTRUCTIONS = """\
-RAG over the Mimoria codebase. Prefer these tools over directory walks or
-grep when looking for code by intent ("how does mastery work?"), by symbol
-("FsrsCalculator.calculateNewStability"), or for a file's symbolic outline.
+stropha — RAG over the local codebase. Prefer these tools over directory walks
+or grep when looking for code by intent ("how does mastery work?"), by symbol
+("EnrollmentRepository.findByUsername"), or for a file's symbolic outline.
 
 Tool selection guide:
 - Free-text or conceptual query → search_code
@@ -81,7 +81,7 @@ Tool selection guide:
 
 
 mcp = FastMCP(
-    name="mimoria-rag",
+    name="stropha",
     instructions=_INSTRUCTIONS,
     lifespan=_lifespan,
 )
@@ -154,7 +154,7 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
 @mcp.tool(
     title="Search code",
     description=(
-        "Hybrid semantic + lexical search over the Mimoria codebase. "
+        "Hybrid semantic + lexical search over the indexed codebase. "
         "Use for queries like 'where is X', 'how does Y work', "
         "'show examples of Z'. For an exact symbol name, prefer get_symbol."
     ),
@@ -176,7 +176,7 @@ def search_code(
     top_k = max(1, min(top_k, 30))
     try:
         hits = app.search_engine.search(query, top_k=top_k)
-    except RagError as exc:
+    except StrophaError as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query)
     return SearchResponse(
@@ -227,7 +227,7 @@ def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
     ]
 
 
-@mcp.resource("rag://stats")
+@mcp.resource("stropha://stats")
 def index_stats_resource() -> StatsPayload:
     """Index statistics. Exposed as both a Tool and a Resource for discovery."""
     # FastMCP resources cannot use the lifespan context directly today, so we
