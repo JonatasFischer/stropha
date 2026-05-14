@@ -55,17 +55,37 @@ def _root(
 
 @app.command()
 def index(
-    repo: Path = typer.Option(
-        None, "--repo", help="Target repo to index (default: STROPHA_TARGET_REPO)."
+    repo: list[Path] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help=(
+            "Repository to index. Repeat for multi-repo indexing "
+            "(e.g. `--repo /a --repo /b`). Falls back to STROPHA_TARGET_REPO "
+            "when omitted."
+        ),
     ),
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
     ),
 ) -> None:
-    """Walk the target repo, chunk every file, embed, and store."""
+    """Walk one or more repos, chunk every file, embed, and store."""
     cfg = _load_config()
-    target = (repo or cfg.target_repo).resolve()
-    console.print(f"[bold]Target:[/bold] {target}")
+    targets: list[Path] = [p.resolve() for p in (repo or [])]
+    if not targets:
+        targets = [cfg.target_repo.resolve()]
+
+    for t in targets:
+        if not t.is_dir():
+            console.print(f"[red]Target not a directory:[/red] {t}")
+            raise typer.Exit(code=1)
+
+    console.print(
+        "[bold]Target"
+        + ("s" if len(targets) > 1 else "")
+        + ":[/bold] "
+        + ", ".join(str(t) for t in targets)
+    )
     console.print(f"[bold]Index :[/bold] {cfg.resolve_index_path()}")
 
     try:
@@ -80,27 +100,32 @@ def index(
     try:
         with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
             pipeline = IndexPipeline(
-                repo=target, storage=storage, embedder=embedder
+                storage=storage, embedder=embedder, repos=targets
             )
             stats = pipeline.run(rebuild=rebuild)
         console.print(
             f"[green]Done.[/green] {stats.files_visited} files · "
             f"{stats.chunks_seen} chunks · "
             f"{stats.chunks_embedded} embedded · "
-            f"{stats.chunks_skipped_fresh} reused"
+            f"{stats.chunks_skipped_fresh} reused "
+            f"across {len(stats.repos)} repo"
+            + ("s" if len(stats.repos) != 1 else "")
         )
-        if stats.repo_normalized_key:
+        for r in stats.repos:
             console.print(
-                f"[dim]Repo:[/dim] {stats.repo_normalized_key}"
-                + (f"  ([blue]{stats.repo_url}[/blue])" if stats.repo_url else "")
+                f"  [dim]·[/dim] {r.normalized_key}"
+                + (f"  ([blue]{r.url}[/blue])" if r.url else "")
+                + f"  — {r.files_visited} files, {r.chunks_embedded} embedded"
             )
         if stats.chunks_backfilled:
             console.print(
-                f"[dim]Auto-backfilled {stats.chunks_backfilled} legacy chunks "
-                f"to current repo.[/dim]"
+                f"[dim]Auto-backfilled {stats.chunks_backfilled} legacy chunks.[/dim]"
             )
     except StrophaError as exc:
         console.print(f"[red]Indexing failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        console.print(f"[red]Invalid input:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
 

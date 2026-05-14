@@ -27,9 +27,24 @@ def sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
-def make_chunk_id(rel_path: str, start: int, end: int, content_hash: str) -> str:
-    """Deterministic chunk id per spec §3.4."""
-    payload = f"{rel_path}:{start}-{end}:{content_hash}"
+def make_chunk_id(
+    rel_path: str,
+    start: int,
+    end: int,
+    content_hash: str,
+    repo_key: str | None = None,
+) -> str:
+    """Deterministic chunk id per spec §3.4.
+
+    ``repo_key`` (when provided) is prepended to the hash payload so that
+    two repos with identical files / line ranges produce distinct chunk ids.
+    Multi-repo indexing relies on this; single-repo callers can omit it for
+    backwards compatibility with pre-v0.2 indexes.
+    """
+    if repo_key:
+        payload = f"{repo_key}:{rel_path}:{start}-{end}:{content_hash}"
+    else:
+        payload = f"{rel_path}:{start}-{end}:{content_hash}"
     return f"sha256:{sha256_hex(payload)}"
 
 

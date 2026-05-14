@@ -47,8 +47,18 @@ Phase 1 ✓:
       the git repo it came from (`normalized_key`, clone URL, default
       branch, HEAD commit at index time). Returned in every `SearchHit`
       so MCP clients can `git clone <url>` to fetch the source. Schema
-      auto-migrates from v1 with sanity-checked backfill. Foundation for
-      multi-repo indexing (Phase 4 in the spec roadmap).
+      auto-migrates from v1 with sanity-checked backfill.
+
+Phase 4 (multi-repo) ✓:
+- [x] `stropha index --repo A --repo B ...` walks each repo sequentially
+      sharing the same Storage and Embedder.
+- [x] `chunk_id` is namespaced by repo (`make_chunk_id(..., repo_key=...)`)
+      so identical files in distinct repos do not collide on the global
+      `chunks.chunk_id` UNIQUE constraint.
+- [x] `IndexStats` aggregates per-repo counters (`stats.repos: list[RepoStats]`)
+      while keeping single-repo back-compat accessors.
+- [x] `--rebuild` clears chunks but preserves the `repos` table — identities
+      survive rebuilds so FK references stay stable across runs.
 
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 

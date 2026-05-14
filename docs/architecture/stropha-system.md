@@ -1170,7 +1170,9 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 
 ### Phase 4 — Escala / extensão
 - [x] **Foundation multi-repo**: schema v2 adiciona tabela `repos` + coluna `chunks.repo_id` + tool MCP `list_repos`. Cada `SearchHit` carrega `repo` com URL, branch e HEAD para o cliente fazer `git clone`. Normalização de URL deduplica SSH/HTTPS do mesmo repo; auth tokens são removidos antes da persistência. Detalhes em `src/stropha/ingest/git_meta.py`.
-- [ ] Multi-repo indexer UX: `stropha index --repo A --repo B` ou manifest YAML; auto-discovery de nested `.git` durante o walk.
+- [x] **Multi-repo indexer UX**: `stropha index --repo A --repo B` (flag `-r` repetível) percorre cada repo sequencialmente compartilhando a mesma Storage e Embedder. `chunk_id` é namespaced por `normalized_key` (via `make_chunk_id(..., repo_key=...)`) — repos diferentes com arquivos idênticos não colidem. `IndexPipeline` aceita `repos: list[Path]`; `IndexStats` agrega contadores por repo (`stats.repos: list[RepoStats]`). `--rebuild` limpa chunks mas preserva tabela `repos`, mantendo FKs estáveis entre rebuilds.
+- [ ] Manifest YAML para listas declarativas de repos.
+- [ ] Auto-discovery de nested `.git` durante o walk (monorepos com submódulos / vendored deps).
 - [ ] Indexação de dependências externas (Quarkus, Vue) on-demand.
 - [ ] Modelo de embedding self-hosted (bge-m3) como fallback offline.
 - [ ] Deploy remoto com OAuth 2.1.
