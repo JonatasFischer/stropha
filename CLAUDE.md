@@ -1,0 +1,141 @@
+# CLAUDE.md — mimoria-rag
+
+Operational guide for LLM coding agents (Claude Code, OpenCode, etc.) working on this repository.
+
+## Project purpose
+
+A Retrieval-Augmented Generation system over the **Mimoria** codebase (sibling repo at `../mimoria`), exposed to LLM clients via the **Model Context Protocol (MCP)**.
+
+Goal: when an agent like Claude Code is editing Mimoria, it should be able to ask `search_code("how does FSRS mastery work?")` and get back precise file/line/snippet results without burning context window on directory walks.
+
+## Authoritative spec
+
+**`docs/architecture/rag-system.md`** is the single source of truth for design decisions. Read it before making non-trivial changes. If you change behavior that contradicts the spec, update the spec in the same commit.
+
+The spec is mirrored from `../mimoria/docs/architecture/rag-system.md`. Treat the copy in this repo as canonical for *this* implementation; the Mimoria copy is the original design document.
+
+## Current phase
+
+**Phase 1 — MVP MCP** complete (per spec §16):
+
+Phase 0 (spike) ✓ — kept for reference:
+- [x] `uv` project scaffold, walker, dummy chunker, embedder abstraction,
+      sqlite-vec storage, CLI `index` / `search` / `stats`.
+
+Phase 1 ✓:
+- [x] Tree-sitter AST chunking for Java, TypeScript, JavaScript, Python,
+      Rust, Go, Kotlin (via `tree-sitter-language-pack.process()`).
+- [x] Custom chunkers for Vue SFC, Markdown (heading split), Gherkin.
+- [x] Class/interface skeleton chunks: emit a meso-level chunk per
+      container with qualified name + member list so BM25 matches the
+      type by identifier.
+- [x] Hybrid search (spec §6.1): **three streams** fused via RRF —
+      dense (sqlite-vec) + sparse (FTS5 BM25, with CamelCase splitting +
+      path/symbol tokens augmenting the FTS document) + symbol-token
+      lookup (query routing per spec §6.3.5).
+- [x] MCP server (`mimoria-rag-mcp`) over stdio. Tools: `search_code`,
+      `get_symbol`, `get_file_outline`. Resource: `rag://stats`.
+- [x] `.mcp.example.json` template for Claude Code / Cursor integration.
+- [x] Chunk-level freshness skip — re-running `index` on a stable repo
+      is near-instant (no API calls, no DB writes).
+
+Exit criterion for Phase 0: `mimoria-rag search "where is the FSRS calculator"` returns the right file in the top 3 — ✓ (rank 3 with local fallback embedder).
+
+Phase 1 exit criterion is qualitative ("Claude Code uses the RAG without being instructed"). The objective floor is: hybrid search returns the right code chunk in the top 3 for symbol+conceptual queries — ✓ for the four probe queries documented in this commit.
+
+**Not yet implemented (deferred to Phase 2/3 — see spec §16):**
+- Reranking (Voyage `rerank-2.5`).
+- Contextual retrieval (Anthropic technique — LLM-generated chunk prefixes).
+- Symbol graph + `find_callers` / `find_tests_for` / `trace_feature`.
+- Git-diff-based incremental reindex (post-commit hooks). For now,
+  `index --rebuild` is the way to capture deletions and renames.
+- Golden dataset + RAGAS evaluation harness.
+- OpenTelemetry tracing → Langfuse.
+
+## How to run
+
+```bash
+# One-time setup
+uv sync
+
+# Copy and edit env
+cp .env.example .env
+# (optional) set VOYAGE_API_KEY for best quality; otherwise local fallback is used.
+
+# Index the target repo (defaults to RAG_TARGET_REPO from .env)
+uv run mimoria-rag index
+
+# Search
+uv run mimoria-rag search "how does FSRS mastery work"
+
+# Stats
+uv run mimoria-rag stats
+```
+
+## Code conventions
+
+- **Python 3.12+**, type hints mandatory on public functions, `pydantic` for structured data.
+- **Async by default** in IO-bound paths (embedding API, file reads). CPU-bound stays sync.
+- **No global state.** Pass `Config` / `Storage` explicitly. Single composition root in `cli.py`.
+- **Errors are structured.** Raise `mimoria_rag.errors.RagError` subclasses; never bare `Exception`.
+- **Logging via `structlog`.** Always include `request_id` / `chunk_id` when relevant; never log raw secrets.
+- **File references in messages.** Use `path:line` format so editors can jump (e.g. `walker.py:42`).
+- Line length 100. `ruff` + `mypy` clean in `dev` extra.
+
+## Architecture map (current)
+
+| Module | Responsibility |
+|---|---|
+| `cli.py` | Typer entry points (`index`, `search`, `stats`); wires Config → components. |
+| `server.py` | MCP server entry (`mimoria-rag-mcp`); FastMCP with lifespan composition root. |
+| `config.py` | Pydantic settings loaded from `.env`. |
+| `ingest/walker.py` | Discover indexable files via `git ls-files` + `.ragignore` + binary/size filters. |
+| `ingest/chunker.py` | Dispatcher: picks per-language chunker, falls back to file-level on errors. |
+| `ingest/chunkers/ast_generic.py` | Tree-sitter via `tree-sitter-language-pack.process()` (Java, TS, JS, Python, Rust, Go, Kotlin). |
+| `ingest/chunkers/markdown.py` | Heading-based section split. |
+| `ingest/chunkers/vue.py` | SFC block split (`<script>` / `<template>` / `<style>`). |
+| `ingest/chunkers/gherkin.py` | Feature / Scenario split (regex; no tree-sitter grammar in the pack). |
+| `ingest/chunkers/fallback.py` | File-level chunker used for unsupported languages. |
+| `ingest/pipeline.py` | Walker → chunker → embedder → storage; freshness skip. |
+| `embeddings/base.py` | `Embedder` protocol; dimension + batch size contract. |
+| `embeddings/voyage.py` | Voyage AI client (active when `VOYAGE_API_KEY` set). |
+| `embeddings/local.py` | fastembed (ONNX) local fallback. |
+| `storage/sqlite.py` | sqlite-vec + FTS5 (BM25 with CamelCase / path / symbol expansion) + metadata. |
+| `retrieval/rrf.py` | Reciprocal Rank Fusion (k=60). |
+| `retrieval/search.py` | Three-stream hybrid: dense + BM25 + symbol-token lookup. |
+
+Planned (not yet present): `ingest/enricher.py` (Contextual Retrieval), `retrieval/rerank.py` (Voyage rerank-2.5), `storage/graph.py` (symbol graph for `find_callers`).
+
+## Embedding strategy
+
+Two providers behind one `Embedder` protocol:
+
+1. **Voyage `voyage-code-3` @ 512 dims (Matryoshka)** — preferred. Activates when `VOYAGE_API_KEY` is set. SOTA for code per the spec §4.1.
+2. **fastembed `jinaai/jina-embeddings-v2-base-code` @ 768 dims** — local ONNX default. Code-specialized (30 programming languages including Java, TS, JS, Python, Go, Rust, Kotlin). Zero cost, zero network. Single biggest local-only quality lever per `docs/architecture/rag-graphify-integration.md` ADR-008. Configurable via `RAG_LOCAL_EMBED_MODEL`.
+
+Both write the model name + dimension into the chunk row (`embedding_model`, `embedding_dim`). Switching providers does **not** invalidate the index; rows from a different model are simply ignored at query time until reindex. The CLI prints a warning if it finds mixed models.
+
+## Testing
+
+```bash
+uv run pytest                  # unit tests
+uv run pytest tests/eval -m e2e   # end-to-end (requires fixture repo)
+```
+
+Phase 2 will add a golden dataset under `tests/eval/golden/` and a RAGAS harness. Until then, smoke tests live in `tests/unit/`.
+
+## Hygiene rules for agents
+
+1. **Never invent symbols or APIs.** If unsure whether `voyageai` has `embed_async`, read the installed source under `.venv/`.
+2. **Never bypass the embedder abstraction.** No direct `voyageai.Client()` calls outside `embeddings/voyage.py`.
+3. **Never write to the index outside `storage/sqlite.py`.** All schema migrations go through `storage/sqlite.py:Storage.migrate`.
+4. **Never index secrets.** The walker excludes `.env*`; if you add a new file type, confirm gitleaks-style scanning is in place before merge.
+5. **Spec drift = update the spec.** If you change behavior, edit `docs/architecture/rag-system.md` in the same PR.
+
+## Useful pointers
+
+- Spec: `docs/architecture/rag-system.md`
+- Target codebase to index: `../mimoria/`
+- Voyage docs: https://docs.voyageai.com
+- sqlite-vec docs: https://github.com/asg017/sqlite-vec
+- MCP spec: https://modelcontextprotocol.io/specification

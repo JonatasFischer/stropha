@@ -1,0 +1,62 @@
+# Paths excluded from indexing (in addition to .gitignore).
+# Same syntax as .gitignore.
+
+# Build artifacts
+**/target/**
+**/node_modules/**
+**/dist/**
+**/build/**
+**/.next/**
+**/.nuxt/**
+**/out/**
+
+# Lockfiles
+**/*.lock
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+**/uv.lock
+**/poetry.lock
+**/Cargo.lock
+
+# Minified / generated
+**/*.min.js
+**/*.min.css
+**/*.map
+**/*.snap
+
+# Large data / fixtures
+**/*.parquet
+**/*.arrow
+**/*.csv
+**/*.tsv
+**/fixtures/**/*.json
+**/__snapshots__/**
+
+# Media / binary
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.svg
+**/*.ico
+**/*.pdf
+**/*.zip
+**/*.tar
+**/*.gz
+**/*.mp4
+**/*.mp3
+**/*.wav
+**/*.woff
+**/*.woff2
+**/*.ttf
+**/*.eot
+
+# Coverage / logs
+**/coverage/**
+**/.coverage
+**/*.log
+
+# RAG self
+**/.mimoria-rag/**
+**/index.db*

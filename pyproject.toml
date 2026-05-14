@@ -1,0 +1,61 @@
+[project]
+name = "mimoria-rag"
+version = "0.0.1"
+description = "RAG system over the Mimoria codebase, exposed to LLM clients via MCP."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Jonatas" }]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlite-vec>=0.1.6",
+    "numpy>=1.26",
+    "structlog>=24.1",
+    "python-dotenv>=1.0",
+    "pathspec>=0.12",
+    # Embedding providers
+    "voyageai>=0.3",         # remote provider (recommended by spec)
+    "fastembed>=0.4",        # local fallback (ONNX, no torch)
+    # Phase 1
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.10",
+    "mcp>=1.2",
+]
+
+[project.scripts]
+mimoria-rag = "mimoria_rag.cli:app"
+mimoria-rag-mcp = "mimoria_rag.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mimoria_rag"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: spawns subprocess / hits the network; skipped in fast CI runs.",
+    "e2e: end-to-end against a real target repo.",
+]
