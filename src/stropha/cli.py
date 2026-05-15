@@ -155,8 +155,21 @@ def index(
                 repos=targets,
             )
             stats = pipeline.run(rebuild=rebuild)
+        # Surface file-level cache hits prominently — they are the
+        # biggest perf win of Phase A incremental.
+        skipped_part = (
+            f"{stats.files_skipped_fresh} files fresh · "
+            if stats.files_skipped_fresh
+            else ""
+        )
+        evicted_part = (
+            f"{stats.files_evicted} evicted · "
+            if stats.files_evicted
+            else ""
+        )
         console.print(
             f"[green]Done.[/green] {stats.files_visited} files · "
+            f"{skipped_part}{evicted_part}"
             f"{stats.chunks_seen} chunks · "
             f"{stats.chunks_embedded} embedded · "
             f"{stats.chunks_skipped_fresh} reused · "
@@ -166,10 +179,16 @@ def index(
             + ("s" if len(stats.repos) != 1 else "")
         )
         for r in stats.repos:
+            extras = []
+            if r.files_skipped_fresh:
+                extras.append(f"{r.files_skipped_fresh} fresh")
+            if r.files_evicted:
+                extras.append(f"{r.files_evicted} evicted")
+            extra = f" ({', '.join(extras)})" if extras else ""
             console.print(
                 f"  [dim]·[/dim] {r.normalized_key}"
                 + (f"  ([blue]{r.url}[/blue])" if r.url else "")
-                + f"  — {r.files_visited} files, {r.chunks_embedded} embedded"
+                + f"  — {r.files_visited} files, {r.chunks_embedded} embedded{extra}"
             )
     except StrophaError as exc:
         console.print(f"[red]Indexing failed:[/red] {exc}")

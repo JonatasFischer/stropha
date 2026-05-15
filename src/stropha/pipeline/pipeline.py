@@ -37,6 +37,13 @@ class RepoStats:
     normalized_key: str
     url: str | None
     files_visited: int = 0
+    files_skipped_fresh: int = 0
+    """Files whose stored ``(mtime, size_bytes)`` matched the on-disk
+    state — the chunker + enricher + embedder were skipped entirely.
+    Phase A incremental win."""
+    files_evicted: int = 0
+    """Files that disappeared from the working tree since last index;
+    their chunks have been dropped."""
     chunks_seen: int = 0
     chunks_embedded: int = 0
     chunks_skipped_fresh: int = 0
@@ -55,6 +62,14 @@ class PipelineStats:
     @property
     def files_visited(self) -> int:
         return sum(r.files_visited for r in self.repos)
+
+    @property
+    def files_skipped_fresh(self) -> int:
+        return sum(r.files_skipped_fresh for r in self.repos)
+
+    @property
+    def files_evicted(self) -> int:
+        return sum(r.files_evicted for r in self.repos)
 
     @property
     def chunks_seen(self) -> int:
@@ -229,16 +244,39 @@ class Pipeline:
             normalized_key=identity.normalized_key,
             url=identity.remote_url,
         )
+        # Materialise the walker output so we can both index it and use
+        # it for stale-file detection.
+        source_files = list(self._walker.discover(repo_path))
         self._index_files(
-            self._walker.discover(repo_path),
+            source_files,
             rstats,
             repo_id=repo_id,
             repo_key=identity.normalized_key,
         )
+        # Passive stale cleanup (Phase A): files that were tracked in a
+        # previous run but no longer appear in the walker output get their
+        # chunks AND file_meta evicted. Phase B will replace this with a
+        # git-diff-driven path that handles renames properly.
+        current_paths = [sf.rel_path for sf in source_files]
+        stale = self._storage.list_stale_files(repo_id, current_paths)
+        if stale:
+            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
+            self._storage.delete_file_meta(repo_id, stale)
+            rstats.files_evicted = len(stale)
+            log.info(
+                "pipeline.stale_files_evicted",
+                repo=identity.normalized_key,
+                evicted_files=len(stale),
+                evicted_chunks=evicted,
+                examples=stale[:5],
+            )
+            self._storage.commit()
         log.info(
             "pipeline.repo_done",
             repo=identity.normalized_key,
             files=rstats.files_visited,
+            files_skipped_fresh=rstats.files_skipped_fresh,
+            files_evicted=rstats.files_evicted,
             chunks=rstats.chunks_seen,
             embedded=rstats.chunks_embedded,
             reused=rstats.chunks_skipped_fresh,
@@ -286,12 +324,44 @@ class Pipeline:
 
         for sf in files:
             seen_paths.add(sf.rel_path)
+            stats.files_visited += 1
+
+            # --- Phase A early-skip: file-level dirty cache ----------------
+            # mtime + size_bytes are a cheap O(1) check that skips the
+            # chunker + enricher + embedder entirely for files that did
+            # not change since the last index. The chunk_is_fresh layer
+            # below still catches the edge case where a file was touched
+            # but its content (hash) stayed identical.
+            try:
+                fs_mtime = sf.path.stat().st_mtime
+                fs_size = sf.path.stat().st_size
+            except OSError:
+                # File vanished between walker and pipeline — skip silently
+                # and let the stale-cleanup pass evict its chunks.
+                continue
+            if self._storage.file_is_fresh(
+                repo_id=repo_id,
+                rel_path=sf.rel_path,
+                mtime=fs_mtime,
+                size_bytes=fs_size,
+                enricher_id=enricher_id,
+                embedder_model=embedder_model,
+            ):
+                stats.files_skipped_fresh += 1
+                continue
+
             # Build a per-file index of chunks for parent-chunk lookup in
             # the hierarchical enricher. Cheap — chunker emits ≤ ~tens per file.
             file_chunks: list[Chunk] = list(
                 self._chunker.chunk([sf], repo_key=repo_key)
             )
             by_id: dict[str, Chunk] = {c.chunk_id: c for c in file_chunks}
+            # Capture the file-level content hash for the file_meta upsert.
+            # Same hash function chunks use — guarantees a single read of
+            # the file content is sufficient. We use the first chunk's
+            # content_hash as a proxy when the chunker emits a file-level
+            # chunk; otherwise we hash the on-disk content here.
+            file_content_hash: str | None = None
             for chunk in file_chunks:
                 stats.chunks_seen += 1
                 if self._storage.chunk_is_fresh(
@@ -326,5 +396,30 @@ class Pipeline:
                 batch_embed_texts.append(embed_text)
                 if len(batch_texts) >= batch_size:
                     flush()
+            # Record file_meta after the file is fully processed. We use
+            # the content hash of the FIRST chunk as a stable proxy; for
+            # multi-chunk files the (mtime, size) primary key is what
+            # triggers freshness anyway. If chunking emitted zero chunks
+            # (e.g. binary slipped through filter, parser crash) we still
+            # record the visit so we don't re-attempt every run.
+            if file_chunks:
+                file_content_hash = file_chunks[0].content_hash
+            else:
+                import hashlib as _hashlib
+                try:
+                    file_content_hash = _hashlib.sha256(
+                        sf.path.read_bytes()
+                    ).hexdigest()
+                except OSError:
+                    file_content_hash = "(unreadable)"
+            self._storage.upsert_file_meta(
+                repo_id=repo_id,
+                rel_path=sf.rel_path,
+                content_hash=file_content_hash,
+                size_bytes=fs_size,
+                mtime=fs_mtime,
+                chunk_count=len(file_chunks),
+                enricher_id=enricher_id,
+                embedder_model=embedder_model,
+            )
         flush()
-        stats.files_visited = len(seen_paths)

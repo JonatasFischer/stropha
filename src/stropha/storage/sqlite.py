@@ -37,7 +37,12 @@ log = get_logger(__name__)
 # v5: Trilha A L3 — `graph_nodes.embedding` BLOB + `graph_nodes.embedding_model`
 #     for the `graph-vec` retrieval stream. Brute-force cosine in Python:
 #     graphs are typically <50K nodes so a single dense pass is sub-ms.
-SCHEMA_VERSION = 5
+# v6: file-level dirty cache (Phase A incremental). `files` table keyed by
+#     (repo_id, rel_path) with mtime + size + content_hash + chunk_count.
+#     Lets `Pipeline._index_files()` skip chunking entirely when a file is
+#     fresh — saves tree-sitter parse + chunk-fresh probes for typical
+#     no-op `stropha index` invocations.
+SCHEMA_VERSION = 6
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -348,6 +353,41 @@ class Storage:
         self._add_column_if_missing("graph_nodes", "embedding_model", "TEXT")
         self._add_column_if_missing("graph_nodes", "embedding_dim", "INTEGER")
 
+        # v6: file-level dirty cache (Phase A incremental).
+        # `mtime` + `size_bytes` are the fast-path keys; `content_hash` is
+        # the authoritative key set when the chunker actually reads the
+        # file. `last_chunk_count` is informational (sanity check + stats).
+        # `last_enricher_id` + `last_embedder_model` are denormalised so
+        # `file_is_fresh()` can drop the skip when the active pipeline
+        # config has drifted away from the values used at last index
+        # (otherwise file-level skip would silently override the chunk-level
+        # drift detection of ADR-004).
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS files (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id             INTEGER NOT NULL REFERENCES repos(id),
+                rel_path            TEXT NOT NULL,
+                content_hash        TEXT NOT NULL,
+                size_bytes          INTEGER NOT NULL,
+                mtime               REAL NOT NULL,
+                last_indexed_at     TEXT NOT NULL,
+                last_chunk_count    INTEGER NOT NULL DEFAULT 0,
+                last_enricher_id    TEXT,
+                last_embedder_model TEXT,
+                UNIQUE (repo_id, rel_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_files_repo_path
+                ON files(repo_id, rel_path);
+            CREATE INDEX IF NOT EXISTS idx_files_content_hash
+                ON files(content_hash);
+            """
+        )
+        # Upgrade path for installs that ran an earlier v6 build before
+        # these columns existed.
+        self._add_column_if_missing("files", "last_enricher_id", "TEXT")
+        self._add_column_if_missing("files", "last_embedder_model", "TEXT")
+
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
             ("schema_version", str(SCHEMA_VERSION)),
@@ -565,6 +605,111 @@ class Storage:
             (content_hash, enricher_id, embedding_text, now),
         )
 
+    # ----- file-level dirty cache (Phase A incremental, schema v6) --------
+
+    def file_is_fresh(
+        self,
+        repo_id: int,
+        rel_path: str,
+        *,
+        mtime: float,
+        size_bytes: int,
+        enricher_id: str | None = None,
+        embedder_model: str | None = None,
+    ) -> bool:
+        """True iff the stored ``files`` row for ``(repo_id, rel_path)``
+        matches ``(mtime, size_bytes)`` AND was last indexed by the same
+        ``(enricher_id, embedder_model)`` pair currently active.
+
+        The pipeline config check honours the ADR-004 drift contract:
+        swapping the enricher MUST force re-processing of every file even
+        when the on-disk content is identical. Pass ``None`` for either
+        parameter to skip that side of the comparison (used by tests).
+
+        Returns ``False`` for unknown files (treated as "needs indexing").
+        """
+        row = self._conn.execute(
+            """SELECT mtime, size_bytes, last_enricher_id, last_embedder_model
+               FROM files
+               WHERE repo_id = ? AND rel_path = ?""",
+            (repo_id, rel_path),
+        ).fetchone()
+        if row is None:
+            return False
+        # mtime comes from filesystem (float seconds). Allow exact match;
+        # rounding error is essentially impossible since we store what we
+        # read with no transformation.
+        if float(row["mtime"]) != float(mtime):
+            return False
+        if int(row["size_bytes"]) != int(size_bytes):
+            return False
+        if enricher_id is not None and row["last_enricher_id"] != enricher_id:
+            return False
+        if embedder_model is not None and row["last_embedder_model"] != embedder_model:
+            return False
+        return True
+
+    def upsert_file_meta(
+        self,
+        *,
+        repo_id: int,
+        rel_path: str,
+        content_hash: str,
+        size_bytes: int,
+        mtime: float,
+        chunk_count: int,
+        enricher_id: str | None = None,
+        embedder_model: str | None = None,
+    ) -> None:
+        """Record that ``rel_path`` was indexed at ``mtime`` / ``size_bytes``."""
+        now = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """INSERT INTO files
+                 (repo_id, rel_path, content_hash, size_bytes, mtime,
+                  last_indexed_at, last_chunk_count,
+                  last_enricher_id, last_embedder_model)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(repo_id, rel_path) DO UPDATE SET
+                  content_hash = excluded.content_hash,
+                  size_bytes = excluded.size_bytes,
+                  mtime = excluded.mtime,
+                  last_indexed_at = excluded.last_indexed_at,
+                  last_chunk_count = excluded.last_chunk_count,
+                  last_enricher_id = excluded.last_enricher_id,
+                  last_embedder_model = excluded.last_embedder_model""",
+            (
+                repo_id, rel_path, content_hash, size_bytes, mtime,
+                now, chunk_count, enricher_id, embedder_model,
+            ),
+        )
+
+    def delete_file_meta(self, repo_id: int, rel_paths: list[str]) -> int:
+        """Drop the ``files`` rows for ``rel_paths`` under ``repo_id``."""
+        if not rel_paths:
+            return 0
+        placeholders = ",".join("?" * len(rel_paths))
+        cur = self._conn.execute(
+            f"""DELETE FROM files
+               WHERE repo_id = ? AND rel_path IN ({placeholders})""",
+            (repo_id, *rel_paths),
+        )
+        return int(cur.rowcount or 0)
+
+    def list_stale_files(
+        self, repo_id: int, current_rel_paths: list[str],
+    ) -> list[str]:
+        """Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are
+        NOT present in ``current_rel_paths``. Caller uses this to identify
+        files that have been removed from the working tree and need their
+        chunks evicted.
+        """
+        current = set(current_rel_paths)
+        rows = self._conn.execute(
+            "SELECT rel_path FROM files WHERE repo_id = ?",
+            (repo_id,),
+        ).fetchall()
+        return [r["rel_path"] for r in rows if r["rel_path"] not in current]
+
     def delete_by_paths(self, rel_paths: list[str]) -> int:
         """Remove every chunk whose rel_path is in the list. Returns count."""
         if not rel_paths:
@@ -573,6 +718,32 @@ class Storage:
         cur = self._conn.cursor()
         cur.execute(
             f"SELECT id FROM chunks WHERE rel_path IN ({placeholders})", rel_paths
+        )
+        ids = [int(r["id"]) for r in cur.fetchall()]
+        if not ids:
+            return 0
+        id_placeholders = ",".join("?" * len(ids))
+        cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({id_placeholders})", ids)
+        cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({id_placeholders})", ids)
+        cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
+        return len(ids)
+
+    def delete_chunks_by_repo_paths(
+        self, repo_id: int, rel_paths: list[str],
+    ) -> int:
+        """Repo-scoped variant of ``delete_by_paths``. Used by the
+        incremental pipeline to evict chunks of files that no longer
+        exist in a specific repo, without touching identically-named
+        files in other indexed repos.
+        """
+        if not rel_paths:
+            return 0
+        placeholders = ",".join("?" * len(rel_paths))
+        cur = self._conn.cursor()
+        cur.execute(
+            f"""SELECT id FROM chunks
+               WHERE repo_id = ? AND rel_path IN ({placeholders})""",
+            (repo_id, *rel_paths),
         )
         ids = [int(r["id"]) for r in cur.fetchall()]
         if not ids:
@@ -1023,6 +1194,13 @@ class Storage:
         enrichment_cache = cur.execute(
             "SELECT COUNT(*) AS n FROM enrichments"
         ).fetchone()["n"]
+        # Schema v6: file-level dirty cache size.
+        try:
+            files_tracked = cur.execute(
+                "SELECT COUNT(*) AS n FROM files"
+            ).fetchone()["n"]
+        except sqlite3.OperationalError:
+            files_tracked = 0
         size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
         repos = [r.model_dump() for r in self.list_repos()]
         # Schema v4: graphify mirror summary (None when never loaded).
@@ -1032,6 +1210,7 @@ class Storage:
             "size_bytes": size_bytes,
             "chunks": int(chunks),
             "files": int(files),
+            "files_tracked": int(files_tracked),
             "index_dim": self._dim,
             "models": models,
             "enrichers": enrichers,

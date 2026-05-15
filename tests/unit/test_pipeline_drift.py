@@ -208,8 +208,11 @@ def test_pipeline_switching_enricher_triggers_re_embed(
         stats1 = p1.run(rebuild=True)
         assert stats1.chunks_embedded >= 1
         assert stats1.chunks_skipped_fresh == 0
+        assert stats1.files_skipped_fresh == 0
 
-        # Run 2: same enricher → everything reused.
+        # Run 2: same enricher → Phase A file cache short-circuits before
+        # the chunker. The user-visible invariant is "no new embedding
+        # work"; chunks_seen will be 0 because the chunker never ran.
         p2 = Pipeline(
             storage=storage,
             embedder=embedder,
@@ -217,10 +220,11 @@ def test_pipeline_switching_enricher_triggers_re_embed(
             repos=[repo_with_one_file],
         )
         stats2 = p2.run()
-        assert stats2.chunks_skipped_fresh == stats1.chunks_seen
         assert stats2.chunks_embedded == 0
+        assert stats2.files_skipped_fresh == stats1.files_visited
 
-        # Run 3: switch enricher → drift triggers re-embed of every chunk.
+        # Run 3: switch enricher → file_is_fresh sees enricher_id drift
+        # and returns False, so the chunker runs and every chunk re-embeds.
         p3 = Pipeline(
             storage=storage,
             embedder=embedder,
@@ -230,3 +234,4 @@ def test_pipeline_switching_enricher_triggers_re_embed(
         stats3 = p3.run()
         assert stats3.chunks_embedded == stats1.chunks_seen
         assert stats3.chunks_skipped_fresh == 0
+        assert stats3.files_skipped_fresh == 0
