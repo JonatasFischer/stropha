@@ -1,12 +1,13 @@
 # Pipeline & Adapters — Architecture
 
-> **Status:** Proposed
-> **Versão:** 1.0
-> **Data:** 2026-05-15
+> **Status:** Implemented (Phase 1–4 shipped). The protocol surface, registry, builder e drift-detection contract definidos aqui rodam em produção; o §A no final do doc lista os adapters concretos registrados HOJE.
+> **Versão:** 1.0 (RFC) → 1.1 (delivery)
+> **Data:** 2026-05-15 (RFC) — 2026-05-15 (delivery)
 > **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
 > **Documentos relacionados:**
 > - `docs/architecture/stropha-system.md` (spec mestre)
 > - `docs/architecture/stropha-graphify-integration.md` (integração graphify + post-commit)
+> - `CLAUDE.md §2.3` (snapshot vivo dos adapters)
 
 ---
 
@@ -1105,6 +1106,84 @@ pipeline:
       skip_vec_table: true                # don't create vec_chunks
   retrieval: { adapter: bm25-only }
 ```
+
+---
+
+## §A — Appendix: Adapters concretos registrados (delivery snapshot)
+
+> Este apêndice é a forma compacta da `stropha adapters list` no HEAD atual. Reflete o que está em produção; quando adicionar um adapter novo, atualize esta tabela na mesma PR.
+
+### Walker (3)
+
+| Adapter | Arquivo | Uso típico |
+|---|---|---|
+| `git-ls-files` (default) | `adapters/walker/git_ls_files.py` | Repos git padrão. Honra `.gitignore` + `.strophaignore`, fallback filesystem quando `git` falha. |
+| `filesystem` | `adapters/walker/filesystem.py` | Diretórios sem `.git/` (downloads, vendored deps, snapshots). Skipa caches padrão (`.venv`, `node_modules`, `__pycache__`, `dist`, `build`, …). |
+| `nested-git` | `adapters/walker/nested_git.py` | Monorepos com submódulos / vendored repos. Descobre `.git/` aninhados até `max_depth=4`, rebase paths para a raiz. |
+
+### Chunker (1 dispatcher + 5 language sub-adapters)
+
+| Adapter | Stage | Arquivo | Uso |
+|---|---|---|---|
+| `tree-sitter-dispatch` (default) | `chunker` | `adapters/chunker/tree_sitter_dispatch.py` | Roteia por linguagem via `config.languages.<lang>.adapter`. |
+| `ast-generic` | `language-chunker` | `adapters/chunker/languages/ast_generic.py` | tree-sitter para Java/TS/JS/Python/Rust/Go/Kotlin (via `tree-sitter-language-pack`). |
+| `heading-split` | `language-chunker` | `adapters/chunker/languages/heading_split.py` | Markdown — split por heading. |
+| `sfc-split` | `language-chunker` | `adapters/chunker/languages/sfc_split.py` | Vue Single-File Components (`<script>` / `<template>` / `<style>`). |
+| `regex-feature-scenario` | `language-chunker` | `adapters/chunker/languages/regex_feature_scenario.py` | Gherkin `.feature` — split Feature/Scenario via regex (tree-sitter-language-pack não inclui gherkin). |
+| `file-level` | `language-chunker` | `adapters/chunker/languages/file_level.py` | Fallback para linguagens não suportadas — um chunk por arquivo. |
+
+### Enricher (5)
+
+| Adapter | Arquivo | Custo | Quando usar |
+|---|---|---|---|
+| `noop` (default) | `adapters/enricher/noop.py` | zero | Baseline; `embedding_text == content`. |
+| `hierarchical` | `adapters/enricher/hierarchical.py` | zero | Prepend skeleton do chunk pai (recupera contexto class → method). |
+| `graph-aware` | `adapters/enricher/graph_aware.py` | zero (precisa de Storage injetada) | Prepend community label + node label do graphify. Boost de recall BM25/FTS lexical sem custo de embedding (L2). |
+| `ollama` | `adapters/enricher/ollama.py` | LLM local | One-line summary via Ollama HTTP (`qwen2.5-coder:1.5b`). Fail-graceful. |
+| `mlx` | `adapters/enricher/mlx.py` | LLM local | Mesma proposta do `ollama` mas via `mlx-lm` nativo Apple Silicon. Optional dep `[mlx]`. Lazy-load. |
+
+### Embedder (3)
+
+| Adapter | Arquivo | Modelo padrão | Cost / network |
+|---|---|---|---|
+| `local` (default) | `adapters/embedder/local.py` | `mixedbread-ai/mxbai-embed-large-v1` @ 1024d | local ONNX, ~1.7 GB on disk |
+| `voyage` | `adapters/embedder/voyage.py` | `voyage-code-3` @ 512d (Matryoshka) | cloud, requires `VOYAGE_API_KEY` |
+| `bge-m3` | `adapters/embedder/bge_m3.py` | `BAAI/bge-m3` @ 1024d | local ONNX, multilingual fallback |
+
+### Storage (1)
+
+| Adapter | Arquivo | Notas |
+|---|---|---|
+| `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v5. |
+
+### Retrieval coordinator (1)
+
+| Adapter | Arquivo | Notas |
+|---|---|---|
+| `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. |
+
+### Retrieval stream sub-adapters (4)
+
+| Adapter | Arquivo | Lane semântica |
+|---|---|---|
+| `vec-cosine` (default) | `adapters/retrieval/streams/vec_cosine.py` | Dense ANN sobre `vec_chunks` (sqlite-vec). |
+| `fts5-bm25` (default) | `adapters/retrieval/streams/fts5_bm25.py` | Sparse BM25 sobre `fts_chunks` (FTS5). |
+| `like-tokens` (default) | `adapters/retrieval/streams/like_tokens.py` | Symbol-token `LIKE` match — identificadores. |
+| `graph-vec` (opt-in default-on quando graph existe) | `adapters/retrieval/streams/graph_vec.py` | Cosine brute-force sobre `graph_nodes.embedding`. Trilha A L3. |
+
+### Quick-reference dos adapter_id shapes (drift detection)
+
+| Stage | Shape | Exemplo |
+|---|---|---|
+| walker | `<name>:max=<bytes>[:depth=<n>]` | `git-ls-files:max=524288` |
+| chunker | `tree-sitter-dispatch:<hash>` | `tree-sitter-dispatch:2a342cf6` |
+| enricher | `<name>:<flags>` | `graph-aware:c:n:p` |
+| embedder | `<name>:<model>:<dim>` | `local:mixedbread-ai/mxbai-embed-large-v1:1024` |
+| storage | `sqlite-vec:dim=<n>` | `sqlite-vec:dim=1024` |
+| retrieval | `hybrid-rrf:k=<n>:streams=<hash>` | `hybrid-rrf:k=60:streams=35c9b110` |
+| retrieval-stream | `<name>:k=<n>[:min=<sim>]` | `graph-vec:k=20:min=0.3` |
+
+A mudança de qualquer caractere de um `adapter_id` invalida a freshness check e força re-process dos rows afetados — esse é o contrato de drift detection da ADR-004.
 
 ---
 

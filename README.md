@@ -626,27 +626,39 @@ uv build
 ```
 src/stropha/
 ├── adapters/        # concrete stage implementations (auto-registered)
-│   ├── chunker/     #   tree-sitter-dispatch + per-language sub-adapters
-│   ├── embedder/    #   local (fastembed) + voyage
-│   ├── enricher/    #   noop, hierarchical, graph-aware, ollama
-│   ├── retrieval/   #   hybrid-rrf + 3 stream sub-adapters
+│   ├── chunker/     #   tree-sitter-dispatch + 5 language sub-adapters
+│   ├── embedder/    #   local (fastembed) + voyage + bge-m3
+│   ├── enricher/    #   noop, hierarchical, graph-aware, ollama, mlx
+│   ├── retrieval/   #   hybrid-rrf + 4 stream sub-adapters (including graph-vec)
 │   ├── storage/     #   sqlite-vec
-│   └── walker/      #   git-ls-files
+│   └── walker/      #   git-ls-files, filesystem, nested-git
 ├── pipeline/        # adapter framework: protocol, registry, builder, orchestrator
 ├── stages/          # Stage protocols (one per pipeline step)
-├── ingest/          # legacy chunkers + git_meta + graphify_loader
-├── retrieval/       # SearchEngine + RRF + graph traversal helpers
-├── storage/         # SQLite + sqlite-vec backend
+├── ingest/          # legacy chunkers + git_meta + graphify_loader + graph_vec_loader + manifest
+├── retrieval/       # SearchEngine + RRF + graph traversal + HyDE + recursive merge
+├── storage/         # SQLite + sqlite-vec backend (schema v1→v5)
 ├── eval/            # golden-dataset harness (Recall@K + MRR)
 ├── tools/           # hook installer
-├── cli.py           # Typer entry point — `stropha`
-└── server.py        # FastMCP entry point — `stropha-mcp`
+├── cli.py           # Typer entry point — `stropha` (8 commands + `hook` group)
+├── server.py        # FastMCP entry point — `stropha-mcp` (10 MCP tools)
+├── watch.py         # `stropha watch` — file-watcher soft index
+└── cost.py          # `stropha cost` — log aggregator dashboard
 
-docs/architecture/   # full specs (system + adapters + graphify integration)
-tests/unit/          # 200+ unit tests
-tests/eval/          # golden JSONL files
-graphify-out/        # generated graph snapshot (committed for agent use)
+docs/architecture/
+├── stropha-system.md             # master spec (v1.0 — solution space)
+├── stropha-pipeline-adapters.md  # adapter framework ADR (status: Implemented)
+└── stropha-graphify-integration.md  # graphify RFC + delivery addendum
+
+CLAUDE.md            # live state for LLM agents — read this first
+AGENTS.md            # OpenCode-specific graphify rules
+tests/unit/          # 334 unit tests (~5s)
+tests/eval/          # golden JSONL (30 queries; CI guard via `stropha eval`)
+graphify-out/        # generated graph snapshot (committed; refreshed by post-commit hook)
 ```
+
+For coding agents: **read `CLAUDE.md` before editing**. It has the current
+inventory (§2), invariants (§3) and architecture map (§7) — kept in sync
+with the implementation.
 
 ### Adding a new adapter
 

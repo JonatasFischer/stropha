@@ -2,7 +2,20 @@
 
 Documento de design técnico para um sistema de Retrieval-Augmented Generation (RAG) cuja função é servir como fonte de verdade sobre o codebase Mimoria, exposto ao Claude Code (e outros clientes LLM) via Model Context Protocol (MCP).
 
-> **Status**: Phase 0 (spike) e Phase 1 (MVP MCP) implementados — ver §16. Esquema v2 adiciona identidade de repositório por chunk (foundation para multi-repo da Phase 4). Para o estado vivo da implementação consulte `CLAUDE.md` na raiz do projeto. O documento mapeia o espaço de soluções inteiro — cada decisão tem alternativas listadas com tradeoffs, e o final traz uma recomendação concreta para este projeto.
+> **Status**: este documento é o **mapa do espaço de soluções v1.0** — captura as escolhas de design e suas alternativas. Para o **estado vivo** (o que está shippado HOJE) leia `CLAUDE.md §2 (Current state snapshot)` na raiz do projeto. Quando este doc divergir do que está em produção, `CLAUDE.md` vence.
+>
+> **Implementado (cumulativo, conforme §16):**
+> - Phase 0 (spike) ✓ — walker / chunker dummy / sqlite-vec / CLI.
+> - Phase 1 (MVP MCP) ✓ — tree-sitter chunking, hybrid retrieval (4 streams agora), MCP server `stropha_rag`.
+> - Pipeline-adapters Phase 1–4 (spec `stropha-pipeline-adapters.md`) ✓ — framework Stage/registry + 13 adapters concretos.
+> - Graphify integration Fase 1.5a/b/c/e/f (spec `stropha-graphify-integration.md`) ✓ — mirror SQLite + 6 MCP tools + hook v=3 + L2 retroativo + L3 graph-vec stream.
+> - Phase 2 parcial ✓ — `find_callers` / `find_tests_for`, Recall@K + MRR eval (RAGAS deferred).
+> - Phase 3 parcial ✓ — `trace_feature`, HyDE (via Ollama local), recursive retrieval, soft-index `stropha watch`, cost dashboard.
+> - Phase 4 parcial ✓ — multi-repo `--manifest`, walker `nested-git`, embedder `bge-m3`, hook cross-repo (`--project-dir`).
+>
+> **Diferido por política local-only**: Voyage `rerank-2.5`, Contextual Retrieval (Anthropic), enrichers `anthropic`/`openai`, storage `qdrant`/`pgvector`, deploy remoto / multi-tenant / Web UI.
+>
+> Esquema SQLite atual: v5. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF.
 
 ---
 

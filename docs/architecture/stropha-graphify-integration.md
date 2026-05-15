@@ -1379,3 +1379,67 @@ mas agora cada uma pode apontar para um `project_dir` distinto onde o
 | **flock** | Lock advisory POSIX para serialização entre processos |
 | **provenance** | Origem rastreável de um dado (qual ferramenta, qual commit) |
 | **WAL** | Write-Ahead Logging do SQLite — readers não bloqueiam writers |
+
+---
+
+## 21. Delivery addendum (post-RFC, status `Implemented`)
+
+> Este apêndice é a "lista de chaves entregues" — o que chegou em produção depois que o RFC foi assinado. Atualize aqui quando algo novo ligado à graphify integration aterrissar; o §9 acima é histórico (planejamento), este §21 é vivo (entrega).
+
+### 21.1 MCP tools shipped
+
+| Tool | Arquivo | Origem na RFC |
+|---|---|---|
+| `find_callers` | `src/stropha/retrieval/graph.py` | §5.1 |
+| `find_related` | `src/stropha/retrieval/graph.py` | §5.2 |
+| `get_community` | `src/stropha/retrieval/graph.py` | §5.3 |
+| `find_rationale` | `src/stropha/retrieval/graph.py` | §5.4 (gated por presença de `rationale_for` edges) |
+| `find_tests_for` | `src/stropha/retrieval/graph.py` | spec mestre §3.5 (não estava na RFC original; adicionado para fechar o trio prometido) |
+| `trace_feature` | `src/stropha/retrieval/graph.py` | spec mestre §6.3.5 (não estava na RFC; adicionado em Phase 3) |
+
+Todos retornam `{"graph_loaded": false, "message": …}` quando a tabela `graph_nodes` está vazia (per §8 MUST do RFC, mas via gating no servidor MCP em vez de exclusão de `tools/list` — pragmatismo: FastMCP não tem lazy tool registration limpa, e o erro estruturado dá feedback acionável ao agente).
+
+### 21.2 SQLite schema migration delivered
+
+- **v4** (`storage/sqlite.py`): tabelas `graph_nodes`, `graph_edges`, `graph_meta` + 4 índices (`label`, `source_file`, `community_id`, `target+relation+confidence`, `source+relation+confidence`).
+- **v5**: colunas `graph_nodes.embedding` (BLOB float32) + `embedding_model` + `embedding_dim` para o stream `graph-vec` (Trilha A L3).
+- `Storage.augment_fts_with_graph()` (`storage/sqlite.py`) — método retroativo L2: DELETE + INSERT na `fts_chunks` com community + node labels appendados ao `_fts_text()` legacy. Toggle: `STROPHA_GRAPH_FTS_AUGMENT=1` (default on). Idempotente.
+
+### 21.3 Loader / pipeline integration
+
+- `src/stropha/ingest/graphify_loader.py` — idempotente, transacional, staleness por `mtime` vs `graph_meta.last_loaded_mtime`. Filtro por `STROPHA_GRAPH_CONFIDENCE` (default `EXTRACTED`).
+- `src/stropha/ingest/graph_vec_loader.py` — embed incremental de `graph_nodes.label` via o embedder ativo. Skip-fresh por `embedding_model`. ~30 s para 2K nós com fastembed/mxbai.
+- `Pipeline.run()` (`pipeline/pipeline.py::_refresh_graphify_mirror`) — ordem canônica post-index: GraphifyLoader → GraphVecLoader → `augment_fts_with_graph`. Invariante #3 do `CLAUDE.md §3`.
+
+### 21.4 Hook installer (CLI + cross-repo v=3)
+
+- `src/stropha/tools/hook_install.py` — atomic write entre markers `# stropha-hook-start v=N`, honra `core.hooksPath` com safety check (path deve estar sob `repo` ou `$HOME`), detecta coexistência com `# graphify-hook-start` e emite warning.
+- **v=3** (ADR-007a deste doc): cross-repo via 3 flags bakadas no script: `--project-dir <where-stropha-lives>` / `--index-path <per-repo-db>` / `--log-path <per-repo-log>`. Resolve o bug onde `uv run --directory $TOPLEVEL stropha index` quebra com `Failed to spawn: stropha` quando target ≠ project_dir. Env vars (`STROPHA_HOOK_PROJECT_DIR`, `STROPHA_HOOK_INDEX_PATH`) ainda batem o bake.
+
+### 21.5 L2 + L3 delivery (vs RFC §4.5 / §4.6 / §1.5e / §1.5f)
+
+| RFC item | Status | Delivery shape |
+|---|---|---|
+| L2 — FTS5 augmentation (§4.5) | ✅ duplo | (a) **Enricher `graph-aware`** prepend community + node em `embedding_text` durante index (pré-FTS). (b) **`Storage.augment_fts_with_graph()`** roda pós-index, retroativo, sem re-embed. Os dois coexistem — escolha por preferência: enricher (drift detection auto) vs storage method (mais barato em re-runs). |
+| L3 — Embeddings de node labels (§4.6 / §1.5f) | ✅ | `retrieval-stream/graph-vec` faz brute-force cosine sobre `graph_nodes.embedding`. Default-on quando o grafo existe (não precisa do `STROPHA_GRAPH_VEC_AUGMENT=1` que o ADR-008 propôs — a 4ª stream simplesmente retorna `[]` quando vazia, então é seguro deixar sempre ligada). |
+| L4 — Graph RAG/community summaries (§4.7) | ⏳ não shippado | Continua fora de escopo; depende de golden dataset maduro pra validar custo/benefício. |
+
+### 21.6 ADR-007a — Hook v=3 cross-repo (decisão de bake vs env)
+
+**Contexto**: o RFC original (ADR-007) assumiu "um repo por install"; cross-repo só via instalações repetidas. Empiricamente, quando `--target ≠ project_dir`, o hook v=2 quebrava silenciosamente em background com `Failed to spawn: stropha` (verificado em `uv run --directory /tmp stropha --help` → exit code não-zero com erro em stderr).
+
+**Decisão**: bake 3 defaults no script gerado:
+- `PROJECT_DIR_DEFAULT` — onde o `uv` venv com stropha vive
+- `INDEX_PATH_DEFAULT` — força um `STROPHA_INDEX_PATH=` no `env` que precede o `stropha index`
+- `LOG_DEFAULT` — log per-repo (`~/.cache/stropha-hook-mimoria.log`)
+
+Bake > env vars de commit-time. Razão: hooks rodam num contexto shell minimalista (PATH stripado, sem dotfiles). Bakar é determinístico, auditável (via `stropha hook status`) e ainda permite override pontual via env (`STROPHA_HOOK_PROJECT_DIR`, etc.).
+
+### 21.7 What's NOT in this delivery
+
+- **OpenTelemetry tracing** (§11.3) — diferido; `structlog` + `stropha cost` cobrem o caso imediato.
+- **RAGAS-style eval** (§11.2) — apenas Recall@K + MRR shipped (sem LLM-judge); local-only directive.
+- **Voyage `rerank-2.5` stage** — cloud, fora da diretiva local-only.
+- **L4 GraphRAG** (community summaries via LLM) — bloqueado em golden dataset.
+
+Quando esses itens forem priorizados, adicione uma linha aqui referenciando o commit/PR de delivery.
