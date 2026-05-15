@@ -127,7 +127,37 @@ class Pipeline:
         self._chunker = chunker
 
     # ------------------------------------------------------------------ run
-    def run(self, *, rebuild: bool = False) -> PipelineStats:
+    def run(
+        self,
+        *,
+        rebuild: bool = False,
+        mode: str = "auto",
+        since_sha: str | None = None,
+    ) -> PipelineStats:
+        """Execute the pipeline.
+
+        Args:
+            rebuild: Wipe chunks before indexing (does NOT drop repos).
+                Forces ``mode="full"`` internally.
+            mode: One of ``"auto"`` (default), ``"full"``, or
+                ``"incremental"``.
+
+                - ``auto`` — incremental when ``meta['last_indexed_sha_<id>']``
+                  exists for each repo AND the repo is a real git tree;
+                  otherwise full.
+                - ``full`` — always walks every file via the configured
+                  walker (legacy behaviour pre-Phase B).
+                - ``incremental`` — uses ``GitDiffWalker`` against
+                  ``since_sha`` (defaults to the stored last sha; errors
+                  if absent).
+            since_sha: Override the stored last_indexed_sha. Useful for
+                debugging or re-running against a known checkpoint.
+        """
+        if rebuild:
+            mode = "full"
+        if mode not in ("auto", "full", "incremental"):
+            raise ValueError(f"unknown pipeline mode: {mode!r}")
+
         stats = PipelineStats(
             enricher_id=self._enricher.adapter_id,
             embedder_id=self._embedder.adapter_id,
@@ -152,7 +182,9 @@ class Pipeline:
             self._storage.clear()
 
         for repo_path in self._repos:
-            rstats = self._index_one_repo(repo_path)
+            rstats = self._index_one_repo(
+                repo_path, mode=mode, since_sha_override=since_sha,
+            )
             stats.repos.append(rstats)
             self._storage.commit()
 
@@ -230,7 +262,13 @@ class Pipeline:
                 log.warning("fts_augment.failed", error=str(exc))
 
     # --------------------------------------------------------------- internals
-    def _index_one_repo(self, repo_path: Path) -> RepoStats:
+    def _index_one_repo(
+        self,
+        repo_path: Path,
+        *,
+        mode: str = "auto",
+        since_sha_override: str | None = None,
+    ) -> RepoStats:
         identity = detect_repo(repo_path)
         repo_id = self._storage.register_repo(identity)
         log.info(
@@ -244,6 +282,70 @@ class Pipeline:
             normalized_key=identity.normalized_key,
             url=identity.remote_url,
         )
+
+        # ---- Resolve effective mode (auto → full | incremental) -----------
+        meta_key = f"last_indexed_sha_{repo_id}"
+        stored_sha = self._storage.get_meta(meta_key)
+        since_sha = since_sha_override or stored_sha
+        head_sha = identity.head_commit
+
+        effective_mode = mode
+        if mode == "auto":
+            if since_sha and head_sha and (repo_path / ".git").exists():
+                effective_mode = "incremental"
+            else:
+                effective_mode = "full"
+        elif mode == "incremental" and not since_sha:
+            # Caller explicitly asked for incremental but we have no
+            # checkpoint. Fall back to a full walk with a clear log
+            # entry — this is the expected case on the first run after
+            # `stropha hook install` (v=4 always passes --incremental
+            # so it can self-document its intent, even though we have
+            # to bootstrap with a full walk).
+            log.info(
+                "pipeline.incremental_no_checkpoint",
+                repo=identity.normalized_key,
+                action="falling back to full walk",
+            )
+            effective_mode = "full"
+
+        log.info(
+            "pipeline.mode_resolved",
+            repo=identity.normalized_key,
+            mode=effective_mode,
+            since_sha=since_sha,
+            head_sha=head_sha,
+        )
+
+        if effective_mode == "incremental":
+            self._index_one_repo_incremental(
+                repo_path, identity, repo_id, rstats, since_sha,  # type: ignore[arg-type]
+            )
+        else:
+            self._index_one_repo_full(repo_path, identity, repo_id, rstats)
+
+        # Record the new checkpoint when we have a HEAD sha (real git repo).
+        if head_sha:
+            self._storage.set_meta(meta_key, head_sha)
+
+        log.info(
+            "pipeline.repo_done",
+            repo=identity.normalized_key,
+            mode=effective_mode,
+            files=rstats.files_visited,
+            files_skipped_fresh=rstats.files_skipped_fresh,
+            files_evicted=rstats.files_evicted,
+            chunks=rstats.chunks_seen,
+            embedded=rstats.chunks_embedded,
+            reused=rstats.chunks_skipped_fresh,
+            enricher_cache_hits=rstats.chunks_enriched_from_cache,
+        )
+        return rstats
+
+    def _index_one_repo_full(
+        self, repo_path: Path, identity, repo_id: int, rstats: RepoStats,
+    ) -> None:
+        """Legacy path: walk every file via the configured walker."""
         # Materialise the walker output so we can both index it and use
         # it for stale-file detection.
         source_files = list(self._walker.discover(repo_path))
@@ -253,10 +355,9 @@ class Pipeline:
             repo_id=repo_id,
             repo_key=identity.normalized_key,
         )
-        # Passive stale cleanup (Phase A): files that were tracked in a
-        # previous run but no longer appear in the walker output get their
-        # chunks AND file_meta evicted. Phase B will replace this with a
-        # git-diff-driven path that handles renames properly.
+        # Passive stale cleanup: files that were tracked in a previous
+        # run but no longer appear in the walker output get their
+        # chunks AND file_meta evicted.
         current_paths = [sf.rel_path for sf in source_files]
         stale = self._storage.list_stale_files(repo_id, current_paths)
         if stale:
@@ -271,18 +372,92 @@ class Pipeline:
                 examples=stale[:5],
             )
             self._storage.commit()
+
+    def _index_one_repo_incremental(
+        self,
+        repo_path: Path,
+        identity,
+        repo_id: int,
+        rstats: RepoStats,
+        since_sha: str,
+    ) -> None:
+        """Phase B path: ingest only the FileDeltas between since_sha..HEAD.
+
+        Falls back to ``_index_one_repo_full`` on any git-side failure —
+        we never want a transient git error to leave the index stale.
+        """
+        from ..adapters.walker.git_diff import GitDiffWalker
+        from ..errors import WalkerError
+        from ..ingest.walker import Walker
+
+        diff_walker = GitDiffWalker()
+        try:
+            deltas = diff_walker.discover_deltas(repo_path, since_sha=since_sha)
+        except WalkerError as exc:
+            log.warning(
+                "pipeline.incremental_fallback",
+                repo=identity.normalized_key,
+                error=str(exc),
+            )
+            self._index_one_repo_full(repo_path, identity, repo_id, rstats)
+            return
+
+        adds_modifies: list[str] = []
+        deletes: list[str] = []
+        renames: list[tuple[str, str]] = []
+        for d in deltas:
+            if d.action == "delete":
+                deletes.append(d.rel_path)
+            elif d.action == "rename" and d.old_rel_path:
+                renames.append((d.old_rel_path, d.rel_path))
+                # If the rename has content changes we still need to
+                # re-index the destination — chunks_is_fresh catches the
+                # unchanged-chunk case downstream.
+                adds_modifies.append(d.rel_path)
+            else:  # add | modify
+                adds_modifies.append(d.rel_path)
+
         log.info(
-            "pipeline.repo_done",
+            "pipeline.incremental_start",
             repo=identity.normalized_key,
-            files=rstats.files_visited,
-            files_skipped_fresh=rstats.files_skipped_fresh,
-            files_evicted=rstats.files_evicted,
-            chunks=rstats.chunks_seen,
-            embedded=rstats.chunks_embedded,
-            reused=rstats.chunks_skipped_fresh,
-            enricher_cache_hits=rstats.chunks_enriched_from_cache,
+            since_sha=since_sha,
+            adds_modifies=len(adds_modifies),
+            renames=len(renames),
+            deletes=len(deletes),
         )
-        return rstats
+
+        # ---- Apply renames first (zero re-embed when content stable) -----
+        for old, new in renames:
+            moved = self._storage.rename_chunks(repo_id, old, new)
+            log.info(
+                "pipeline.incremental_rename",
+                repo=identity.normalized_key,
+                old=old, new=new, chunks_moved=moved,
+            )
+
+        # ---- Apply deletes ------------------------------------------------
+        if deletes:
+            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, deletes)
+            self._storage.delete_file_meta(repo_id, deletes)
+            rstats.files_evicted = len(deletes)
+            log.info(
+                "pipeline.incremental_deletes",
+                repo=identity.normalized_key,
+                files=len(deletes),
+                chunks_evicted=evicted,
+            )
+        self._storage.commit()
+
+        # ---- Index adds + modifies (full chunker + embedder pass) --------
+        # We need to feed the chunker SourceFile objects. The legacy Walker
+        # has a `discover_paths` helper for exactly this case.
+        if adds_modifies:
+            walker = Walker(repo_path)
+            source_files = list(walker.discover_paths(adds_modifies))
+            self._index_files(
+                source_files, rstats,
+                repo_id=repo_id, repo_key=identity.normalized_key,
+            )
 
     def _index_files(
         self,

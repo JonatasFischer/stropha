@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +16,29 @@ class SourceFile(BaseModel):
     rel_path: str
     language: str
     size_bytes: int
+
+
+@dataclass(frozen=True)
+class FileDelta:
+    """One file-level change emitted by the incremental walker (Phase B).
+
+    Maps to the four ``git diff --name-status`` actions:
+
+    - ``add``     — file appeared since ``since_sha``
+    - ``modify``  — file existed and was edited
+    - ``delete``  — file removed from the working tree
+    - ``rename``  — file renamed (possibly with edits — ``similarity`` is
+      the git-reported percentage; identical-content renames are 100)
+
+    ``rel_path`` is the path *as of HEAD* (i.e. post-rename). For renames
+    ``old_rel_path`` is the pre-rename path so the pipeline can
+    ``rename_chunks(old, new)`` instead of re-embedding.
+    """
+
+    action: Literal["add", "modify", "delete", "rename"]
+    rel_path: str
+    old_rel_path: str | None = None
+    similarity: int | None = None
 
 
 class Chunk(BaseModel):

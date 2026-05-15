@@ -80,6 +80,27 @@ def index(
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
     ),
+    full: bool = typer.Option(
+        False, "--full",
+        help=(
+            "Force a full walk (every file checked). "
+            "Useful when --incremental defaults would otherwise apply."
+        ),
+    ),
+    incremental: bool = typer.Option(
+        False, "--incremental",
+        help=(
+            "Force git-diff incremental mode. Errors if no last_indexed_sha "
+            "checkpoint exists (run a full index first, or pass --since)."
+        ),
+    ),
+    since: str | None = typer.Option(
+        None, "--since",
+        help=(
+            "Override last_indexed_sha for incremental mode. "
+            "Useful to re-run against a specific checkpoint."
+        ),
+    ),
     enricher: str | None = typer.Option(
         None,
         "--enricher",
@@ -144,6 +165,16 @@ def index(
     )
     console.print(f"[bold]Enricher:[/bold] {built.enricher.adapter_id}")
 
+    if full and incremental:
+        console.print("[red]--full and --incremental are mutually exclusive[/red]")
+        raise typer.Exit(code=1)
+    if full:
+        mode = "full"
+    elif incremental:
+        mode = "incremental"
+    else:
+        mode = "auto"
+
     try:
         with built.storage as storage:  # type: ignore[union-attr]
             pipeline = Pipeline(
@@ -154,7 +185,7 @@ def index(
                 chunker=built.chunker,
                 repos=targets,
             )
-            stats = pipeline.run(rebuild=rebuild)
+            stats = pipeline.run(rebuild=rebuild, mode=mode, since_sha=since)
         # Surface file-level cache hits prominently — they are the
         # biggest perf win of Phase A incremental.
         skipped_part = (

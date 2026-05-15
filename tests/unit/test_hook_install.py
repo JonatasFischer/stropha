@@ -326,7 +326,7 @@ def test_status_reports_baked_defaults(repo: Path, tmp_path: Path) -> None:
     install(repo, project_dir=project, index_path=idx, log_path=logp)
     s = status(repo)
     assert s.installed is True
-    assert s.version == 3
+    assert s.version == HOOK_VERSION
     assert s.project_dir == project.resolve()
     assert s.index_path == idx.expanduser()
     assert s.log_path_default == logp.expanduser()
@@ -337,9 +337,10 @@ def test_status_reports_baked_defaults(repo: Path, tmp_path: Path) -> None:
     assert d["log_path_default"] == str(logp.expanduser())
 
 
-def test_install_replaces_v2_block_with_v3(repo: Path) -> None:
-    """Upgrade path: a manually-written v=2 block must be cleanly rewritten
-    to v=3 in place (no duplication, no leftover v=2 markers)."""
+def test_install_replaces_older_block_with_current(repo: Path) -> None:
+    """Upgrade path: a manually-written older-version block must be
+    cleanly rewritten to ``HOOK_VERSION`` in place (no duplication, no
+    leftover markers). Validates the v=2 → v=4 upgrade."""
     hook_path = repo / ".git" / "hooks" / "post-commit"
     hook_path.parent.mkdir(parents=True, exist_ok=True)
     # Synthetic v=2 block — content doesn't matter, just the markers.
@@ -357,8 +358,8 @@ def test_install_replaces_v2_block_with_v3(repo: Path) -> None:
     assert result["action"] == "updated"
 
     body = _read_hook(repo)
-    # The new block reports v=3 …
-    assert f"{START_MARKER} v=3" in body
+    # The new block reports the current HOOK_VERSION …
+    assert f"{START_MARKER} v={HOOK_VERSION}" in body
     # … the old v=2 marker is gone …
     assert f"{START_MARKER} v=2" not in body
     # … and the surrounding user content is preserved.
@@ -366,3 +367,12 @@ def test_install_replaces_v2_block_with_v3(repo: Path) -> None:
     assert "echo user epilog" in body
     # Block must appear exactly once.
     assert body.count(START_MARKER) == 1
+
+
+def test_install_v4_template_uses_incremental_flag(repo: Path) -> None:
+    """Phase B contract: the generated hook v=4 invokes
+    ``stropha index --incremental`` so the post-commit refresh re-chunks
+    only the files touched by the commit."""
+    install(repo)
+    body = _read_hook(repo)
+    assert "stropha index --repo $TOPLEVEL --incremental" in body

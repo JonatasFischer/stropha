@@ -40,9 +40,13 @@ log = get_logger(__name__)
 # v=2: graphify update + stropha index in a single nohup block.
 # v=3: cross-repo support. Bakes PROJECT_DIR / INDEX_PATH / LOG defaults at
 #      install time so `--target /repo --project-dir /elsewhere` no longer
-#      requires the user to set env vars on every commit. The legacy
-#      single-repo path is preserved when no flags are passed (empty bakes).
-HOOK_VERSION = 3
+#      requires the user to set env vars on every commit.
+# v=4: incremental indexing by default (Phase B). The `stropha index` CMD
+#      gains `--incremental` so the post-commit refresh only re-chunks +
+#      re-embeds the files that actually changed in this commit. Pipeline
+#      auto-falls-back to full when no `last_indexed_sha` checkpoint exists
+#      (first run after install), so existing v=3 installs upgrade cleanly.
+HOOK_VERSION = 4
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -296,10 +300,14 @@ def _render_hook_block(
             INDEX_ENV="env STROPHA_TARGET_REPO=$TOPLEVEL STROPHA_INDEX_PATH=$INDEX_PATH_OVERRIDE"
         fi
 
+        # v=4: `--incremental` makes the hook re-chunk + re-embed only the
+        # files that this commit touched. The pipeline gracefully falls
+        # back to a full walk when no `last_indexed_sha` checkpoint
+        # exists yet (e.g. first run after install).
         if [ -n "$TIMEOUT_BIN" ]; then
-            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
+            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL --incremental"
         else
-            CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
+            CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL --incremental"
         fi
 
         nohup sh -c "

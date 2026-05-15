@@ -205,7 +205,7 @@ def test_pipeline_switching_enricher_triggers_re_embed(
             enricher=NoopEnricher(),
             repos=[repo_with_one_file],
         )
-        stats1 = p1.run(rebuild=True)
+        stats1 = p1.run(rebuild=True, mode="full")
         assert stats1.chunks_embedded >= 1
         assert stats1.chunks_skipped_fresh == 0
         assert stats1.files_skipped_fresh == 0
@@ -213,13 +213,15 @@ def test_pipeline_switching_enricher_triggers_re_embed(
         # Run 2: same enricher → Phase A file cache short-circuits before
         # the chunker. The user-visible invariant is "no new embedding
         # work"; chunks_seen will be 0 because the chunker never ran.
+        # Pinning mode="full" exercises the file-level cache; Phase B
+        # auto mode is tested separately in test_pipeline_incremental.
         p2 = Pipeline(
             storage=storage,
             embedder=embedder,
             enricher=NoopEnricher(),
             repos=[repo_with_one_file],
         )
-        stats2 = p2.run()
+        stats2 = p2.run(mode="full")
         assert stats2.chunks_embedded == 0
         assert stats2.files_skipped_fresh == stats1.files_visited
 
@@ -231,7 +233,7 @@ def test_pipeline_switching_enricher_triggers_re_embed(
             enricher=HierarchicalEnricher(),
             repos=[repo_with_one_file],
         )
-        stats3 = p3.run()
+        stats3 = p3.run(mode="full")
         assert stats3.chunks_embedded == stats1.chunks_seen
         assert stats3.chunks_skipped_fresh == 0
         assert stats3.files_skipped_fresh == 0

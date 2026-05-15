@@ -728,6 +728,42 @@ class Storage:
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
 
+    def rename_chunks(
+        self, repo_id: int, old_rel_path: str, new_rel_path: str,
+    ) -> int:
+        """Move every chunk's ``rel_path`` from ``old_rel_path`` to
+        ``new_rel_path`` for the given repo.
+
+        Used by the Phase B incremental walker when a file was renamed
+        with NO content change (or only minor content change — the
+        chunk-level freshness check still skips re-embed of unchanged
+        chunks). Returns the number of rows touched. The FTS5
+        ``rel_path`` column tracks the change automatically because we
+        regenerate the FTS row downstream — for now the chunks table is
+        the source of truth.
+        """
+        if old_rel_path == new_rel_path:
+            return 0
+        cur = self._conn.execute(
+            """UPDATE chunks SET rel_path = ?
+               WHERE repo_id = ? AND rel_path = ?""",
+            (new_rel_path, repo_id, old_rel_path),
+        )
+        moved = int(cur.rowcount or 0)
+        # Same for files_meta if present.
+        self._conn.execute(
+            """UPDATE OR IGNORE files SET rel_path = ?
+               WHERE repo_id = ? AND rel_path = ?""",
+            (new_rel_path, repo_id, old_rel_path),
+        )
+        # Drop the old files_meta row in case both ended up present
+        # (UPDATE OR IGNORE skips when the new key collides).
+        self._conn.execute(
+            "DELETE FROM files WHERE repo_id = ? AND rel_path = ?",
+            (repo_id, old_rel_path),
+        )
+        return moved
+
     def delete_chunks_by_repo_paths(
         self, repo_id: int, rel_paths: list[str],
     ) -> int:
