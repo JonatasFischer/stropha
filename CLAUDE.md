@@ -179,16 +179,50 @@ Phase 2 evaluation harness (per spec §16):
 - [x] CLI `stropha eval` exits non-zero when `Recall@K < 0.85` (CI hook).
 - [x] 12 new unit tests (`test_eval_harness.py`).
 
-Pipeline-adapters Phase 5 (in progress):
+Pipeline-adapters Phase 5 (in progress, local-only focus):
 - [x] `enricher/ollama` — local LLM one-line summarisation, pure stdlib
       HTTP, fails gracefully (returns raw content on any error). 14
       mocked tests cover success, all failure paths, and health probes.
-- [ ] `enricher/anthropic`, `enricher/mlx`, `enricher/openai`.
-- [ ] Walker variants (`filesystem`, `nested-git`).
+      Ollama installed locally via `brew install ollama` + `qwen2.5-coder:1.5b`
+      pulled (~1 GB, sub-second per chunk on Apple Silicon).
+- [x] `enricher/mlx` — native Apple Silicon inference via `mlx-lm` (lazy
+      import, optional `[mlx]` extra). Lazy model load (`load()` called
+      once, then cached across enrich calls). Falls back to raw content
+      when mlx-lm missing or load fails. 15 mocked tests.
+- [x] `walker/filesystem` — non-git directory walker, skips a default
+      list of cache dirs (`.venv`, `node_modules`, `__pycache__`, …).
+- [x] `walker/nested-git` — discovers nested `.git/` directories under
+      an umbrella root for monorepos / vendored deps. Output rebased to
+      the umbrella root. 13 walker tests.
+- [ ] `enricher/anthropic`, `enricher/openai` (cloud — skipped per local-only directive).
 - [ ] Storage variants (`qdrant`, `pgvector`, `lancedb`).
-- [ ] Retrieval `hybrid-rrf-rerank` (Voyage rerank-2.5 stage hook).
+- [ ] Retrieval `hybrid-rrf-rerank` (Voyage rerank-2.5 — cloud, skipped).
 
-**Total suite: 217 tests, all green.**
+Trilha A L3 — graph node embeddings (4th RRF stream):
+- [x] Schema v5: `graph_nodes.embedding` BLOB + `embedding_model` +
+      `embedding_dim` columns.
+- [x] `GraphVecLoader` (idempotent: skips nodes whose stored embedding
+      model matches the active embedder; re-embeds on model change).
+- [x] `retrieval-stream/graph-vec` — brute-force cosine over packed
+      float32 BLOBs (sub-ms for ≤50K nodes), hydrates SearchHits via
+      chunk lookup (rel_path + line containment). Auto-runs from
+      `Pipeline.run()` after the structural mirror reload.
+- [x] 16 unit tests (`test_graph_vec.py`).
+
+Phase 3 — `trace_feature` tool:
+- [x] `trace_feature(feature, max_paths, max_depth)` walks outbound
+      `calls` edges DFS from token-overlap entry points. Cycle-safe.
+      Surfaces full chain (entry → step → method → ...). Wired as 9th
+      MCP tool (`stropha_rag.trace_feature`). 4 unit tests.
+
+Phase 4 — declarative multi-repo manifest:
+- [x] `stropha index --manifest repos.yaml` accepts a YAML
+      `{repos: [{path, enabled}]}` declaration. Relative paths resolved
+      from the manifest's directory; `~` expanded; `enabled: false`
+      skipped. Mutually exclusive with `--repo`. 12 unit tests.
+
+**Total suite: 277 tests, all green. 5 enrichers, 4 retrieval streams,
+3 walkers, 9 MCP tools.**
 
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 

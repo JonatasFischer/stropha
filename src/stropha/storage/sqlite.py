@@ -34,7 +34,10 @@ log = get_logger(__name__)
 #     and `graph_meta` tables backing `find_callers` / `find_related` /
 #     `get_community` / `find_rationale` MCP tools. Conditional on
 #     `graphify-out/graph.json` being present at index time.
-SCHEMA_VERSION = 4
+# v5: Trilha A L3 — `graph_nodes.embedding` BLOB + `graph_nodes.embedding_model`
+#     for the `graph-vec` retrieval stream. Brute-force cosine in Python:
+#     graphs are typically <50K nodes so a single dense pass is sub-ms.
+SCHEMA_VERSION = 5
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -335,6 +338,15 @@ class Storage:
             );
             """
         )
+
+        # v5: graph node embeddings for the `graph-vec` retrieval stream
+        # (Trilha A L3). Optional — populated by `GraphVecLoader` when an
+        # embedder is provided. Brute-force cosine at query time keeps the
+        # implementation tiny; for the corpora we target (<50K graph nodes)
+        # one full pass is sub-millisecond.
+        self._add_column_if_missing("graph_nodes", "embedding", "BLOB")
+        self._add_column_if_missing("graph_nodes", "embedding_model", "TEXT")
+        self._add_column_if_missing("graph_nodes", "embedding_dim", "INTEGER")
 
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",

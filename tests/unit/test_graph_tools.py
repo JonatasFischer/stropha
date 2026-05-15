@@ -356,3 +356,91 @@ def test_find_rationale_empty_when_no_edges(tmp_path: Path, storage: Storage) ->
     )
     result = find_rationale(storage, "X")
     assert result["rationale"] == []
+
+
+# --------------------------------------------------------------------------- trace_feature
+
+
+def test_trace_feature_returns_empty_for_unknown_feature(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import trace_feature
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[{"id": "x", "label": "totally_unrelated"}], edges=[],
+    )
+    result = trace_feature(storage, "submit answer mastery")
+    assert result["entries"] == []
+    assert result["paths"] == []
+
+
+def test_trace_feature_picks_token_match_entry_point(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import trace_feature
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {"id": "step", "label": "user_submits_answer_step",
+             "source_file": "steps/answer.py", "source_location": "L10"},
+            {"id": "ctrl", "label": "AnswerController.submit",
+             "source_file": "src/controllers.py", "source_location": "L40"},
+            {"id": "svc", "label": "StudyService.submit_answer",
+             "source_file": "src/study.py", "source_location": "L77"},
+            {"id": "fsrs", "label": "FsrsCalculator.update_mastery",
+             "source_file": "src/fsrs.py", "source_location": "L120"},
+            {"id": "noise", "label": "draw_chart",
+             "source_file": "src/ui.py", "source_location": "L1"},
+        ],
+        edges=[
+            {"source": "step", "target": "ctrl", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "ctrl", "target": "svc", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "svc", "target": "fsrs", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    )
+    result = trace_feature(storage, "user submits answer", max_depth=4)
+    entry_ids = [e["node_id"] for e in result["entries"]]
+    assert "step" in entry_ids
+    # The chain should include step → ctrl → svc → fsrs (the full DFS path).
+    chain_ids = {n["node_id"] for p in result["paths"] for n in p["chain"]}
+    assert {"step", "ctrl", "svc"} <= chain_ids
+
+
+def test_trace_feature_respects_max_depth(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import trace_feature
+
+    nodes = [{"id": f"n{i}", "label": f"feature_chain_{i}",
+              "source_file": "f.py", "source_location": f"L{i}"} for i in range(8)]
+    edges = [
+        {"source": f"n{i}", "target": f"n{i+1}", "relation": "calls", "confidence": "EXTRACTED"}
+        for i in range(7)
+    ]
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=nodes, edges=edges,
+    )
+    result = trace_feature(storage, "feature_chain_0", max_depth=2)
+    chain = result["paths"][0]["chain"]
+    # Entry + at most 2 levels deep
+    assert len(chain) <= 4
+
+
+def test_trace_feature_breaks_cycles(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import trace_feature
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {"id": "a", "label": "submit_action_a"},
+            {"id": "b", "label": "submit_action_b"},
+        ],
+        edges=[
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "a", "relation": "calls", "confidence": "EXTRACTED"},  # cycle
+        ],
+    )
+    # Should not infinite loop or duplicate.
+    result = trace_feature(storage, "submit action", max_depth=10)
+    chain_ids = [n["node_id"] for p in result["paths"] for n in p["chain"]]
+    # Each node visited at most once per entry path
+    for path in result["paths"]:
+        ids = [n["node_id"] for n in path["chain"]]
+        assert len(ids) == len(set(ids))

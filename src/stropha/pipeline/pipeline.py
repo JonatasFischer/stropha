@@ -154,14 +154,22 @@ class Pipeline:
         return stats
 
     def _refresh_graphify_mirror(self) -> None:
-        """Reload the graphify mirror tables if the on-disk graph is newer."""
+        """Reload the graphify mirror tables if the on-disk graph is newer.
+
+        After the structural mirror is refreshed, embed graph node labels
+        into ``graph_nodes.embedding`` so the ``graph-vec`` retrieval stream
+        has fresh vectors. The vec loader is incremental: nodes whose stored
+        embedding model matches the active embedder are skipped.
+        """
         # Local import — keeps the loader module optional. If graphify
         # tables don't exist (older schema, custom storage adapter) just
         # skip silently.
         try:
             from ..ingest.graphify_loader import GraphifyLoader
+            from ..ingest.graph_vec_loader import GraphVecLoader
         except ImportError:  # pragma: no cover — defensive
             return
+        loaded_anything = False
         for repo_path in self._repos:
             try:
                 loader = GraphifyLoader(self._storage, repo_path)  # type: ignore[arg-type]
@@ -175,15 +183,27 @@ class Pipeline:
                     "graphify_loader.fresh",
                     path=str(loader.graph_path),
                 )
-                continue
-            try:
-                loader.load()
-            except Exception as exc:
-                log.warning(
-                    "graphify_loader.load_failed",
-                    path=str(loader.graph_path),
-                    error=str(exc),
-                )
+                # Even if the structural graph is fresh, the embedder may have
+                # changed since last index — let the vec loader decide.
+            else:
+                try:
+                    loader.load()
+                    loaded_anything = True
+                except Exception as exc:
+                    log.warning(
+                        "graphify_loader.load_failed",
+                        path=str(loader.graph_path),
+                        error=str(exc),
+                    )
+                    continue
+
+        # Embed any node whose stored model is not the active embedder.
+        try:
+            vec_loader = GraphVecLoader(self._storage, self._embedder)  # type: ignore[arg-type]
+            if vec_loader.needs_run():
+                vec_loader.load()
+        except Exception as exc:
+            log.warning("graph_vec_loader.failed", error=str(exc))
 
     # --------------------------------------------------------------- internals
     def _index_one_repo(self, repo_path: Path) -> RepoStats:

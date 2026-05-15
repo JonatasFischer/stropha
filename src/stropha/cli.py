@@ -69,6 +69,14 @@ def index(
             "when omitted."
         ),
     ),
+    manifest: Path | None = typer.Option(
+        None,
+        "--manifest", "-m",
+        help=(
+            "Path to a YAML manifest with `repos: [{path: ...}]`. "
+            "Mutually exclusive with --repo."
+        ),
+    ),
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
     ),
@@ -85,10 +93,26 @@ def index(
 ) -> None:
     """Walk one or more repos, chunk every file, enrich, embed, and store."""
     cfg = _load_config()
-    targets: list[Path] = [p.resolve() for p in (repo or [])]
-    if not targets:
-        targets = [cfg.target_repo.resolve()]
+    if manifest and repo:
+        console.print("[red]--manifest and --repo are mutually exclusive[/red]")
+        raise typer.Exit(code=1)
 
+    targets: list[Path] = []
+    if manifest:
+        from .ingest.manifest import ManifestError, load_manifest
+        try:
+            entries = load_manifest(manifest)
+        except ManifestError as exc:
+            console.print(f"[red]Manifest error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        targets = [e.path for e in entries]
+        if not targets:
+            console.print("[yellow]Manifest has no enabled repos[/yellow]")
+            raise typer.Exit(code=1)
+    else:
+        targets = [p.resolve() for p in (repo or [])]
+        if not targets:
+            targets = [cfg.target_repo.resolve()]
     for t in targets:
         if not t.is_dir():
             console.print(f"[red]Target not a directory:[/red] {t}")

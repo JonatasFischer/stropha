@@ -38,6 +38,11 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# Apple Silicon native LLM inference for the `mlx` enricher adapter.
+# Skip on Linux / Intel macs / Windows — `mlx-lm` is Apple-only.
+mlx = [
+    "mlx-lm>=0.18; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
 
 [build-system]
 requires = ["hatchling"]

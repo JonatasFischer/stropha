@@ -6,7 +6,7 @@
 > graph-aware tools (`find_callers`, `find_rationale`, …), and a swappable
 > adapter framework so every stage of the pipeline is pluggable.
 
-[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen)](#evaluation)
+[![Tests](https://img.shields.io/badge/tests-277%20passing-brightgreen)](#evaluation)
 [![Python](https://img.shields.io/badge/python-3.12+-blue)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
@@ -67,17 +67,21 @@ embedder if you want premium quality.
 |---|---|
 | Tree-sitter AST chunking (Python, TS/JS, Java, Kotlin, Go, Rust) | ✅ |
 | Custom chunkers (Vue SFC, Markdown headings, Gherkin features) | ✅ |
-| Hybrid retrieval (dense + BM25 + symbol) fused via RRF | ✅ |
+| Hybrid retrieval — **4 streams** (dense + BM25 + symbol + graph-vec) fused via RRF | ✅ |
 | Class skeletons preserve parent context | ✅ |
-| Multi-repo indexing with stable cross-repo `chunk_id` | ✅ |
+| Multi-repo indexing — `--repo` flags or declarative `--manifest repos.yaml` | ✅ |
 | Drift detection — config change ⇒ re-embed only what changed | ✅ |
-| Pluggable adapter framework — every stage is swappable via YAML | ✅ |
-| Graphify mirror + 4 graph traversal MCP tools | ✅ |
+| Pluggable adapter framework — every stage swappable via YAML | ✅ |
+| Walkers: `git-ls-files`, `filesystem`, `nested-git` (monorepos) | ✅ |
+| Enrichers: `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | ✅ |
+| Graphify mirror + **5 graph traversal MCP tools** (`find_callers`, `find_related`, `get_community`, `find_rationale`, `trace_feature`) | ✅ |
 | Post-commit hook (`stropha hook install`) — auto-refresh in background | ✅ |
 | Offline eval harness (Recall@K + MRR over a JSONL golden set) | ✅ |
-| Optional LLM enricher (Ollama) for one-line semantic summaries | 🟡 alpha |
-| Voyage `rerank-2.5` reranker stage | ⏳ planned |
-| Contextual Retrieval (Anthropic) | ⏳ planned |
+| Local LLM enrichers: Ollama (HTTP) and MLX (Apple Silicon native) | ✅ |
+| File-watcher soft index | ⏳ planned |
+| OpenTelemetry tracing | ⏳ planned |
+| Voyage `rerank-2.5` reranker stage | ⏳ planned (cloud) |
+| Contextual Retrieval (Anthropic) | ⏳ planned (cloud) |
 
 ## Quick start
 
@@ -141,8 +145,9 @@ stropha --help
 | Component | Install | Purpose |
 |---|---|---|
 | Voyage AI embedder | export `VOYAGE_API_KEY=...` | premium code embeddings (`voyage-code-3`) |
-| Graphify | `pipx install graphifyy` | symbol graph for `find_callers` / `find_rationale` |
-| Ollama | [`brew install ollama`](https://ollama.com) + `ollama pull qwen2.5-coder:1.5b` | local LLM enricher (one-line summaries) |
+| Graphify | `pipx install graphifyy` | symbol graph for `find_callers` / `find_rationale` / `trace_feature` |
+| Ollama | `brew install ollama` + `ollama pull qwen2.5-coder:1.5b` | local LLM enricher via HTTP — works on any platform |
+| MLX (Apple Silicon) | `uv sync --extra mlx` | native LLM enricher in-process, ~1.5-2× faster than Ollama on M-series |
 
 ## How it works
 
@@ -182,32 +187,38 @@ chunks** (drift detection, ADR-004).
 
 ### Hybrid retrieval
 
-Every query hits **three streams in parallel** and the results are fused
-with Reciprocal Rank Fusion (RRF). No single stream dominates.
+Every query can hit up to **four streams in parallel** and the results
+are fused with Reciprocal Rank Fusion (RRF). No single stream dominates.
 
 ```mermaid
 flowchart TB
     Q["Query<br/>e.g. 'who handles login retries'"]
     Q --> EMB[embedder.embed_query]
-    EMB --> D[dense stream<br/>vec-cosine<br/>sqlite-vec ANN]
+    EMB --> D[dense stream<br/>vec-cosine<br/>sqlite-vec ANN over chunks]
     Q --> B[sparse stream<br/>fts5-bm25<br/>FTS5 BM25]
     Q --> SYM[symbol stream<br/>like-tokens<br/>identifier LIKE]
+    EMB --> GV[graph-vec stream<br/>cosine over graph<br/>node embeddings]
     D --> RRF{RRF fuse<br/>k=60}
     B --> RRF
     SYM --> RRF
+    GV --> RRF
     RRF --> TOP["top-K SearchHit<br/>with rel_path, symbol,<br/>snippet, repo info"]
 
     style D fill:#e3f2fd
     style B fill:#fff3e0
     style SYM fill:#f3e5f5
+    style GV fill:#fff4e1
     style RRF fill:#c8e6c9
 ```
 
-Why three streams:
+Why four streams:
 
-- **Dense** — semantic similarity, catches paraphrases ("retry policy" vs "exponential backoff")
+- **Dense** — semantic similarity over chunks, catches paraphrases ("retry policy" vs "exponential backoff")
 - **BM25** — exact phrase matching, handles literal terms the embedder smooths over
 - **Symbol** — `LIKE`-based identifier match, surfaces things by their actual name (`StudyService.submitAnswer`)
+- **Graph-vec** — semantic match against the graphify node labels (one
+  per function/class), boosts recall for queries that name a concept the
+  graph already labelled. Auto-disabled when no graph is loaded.
 
 ### Graphify integration
 
@@ -306,9 +317,10 @@ Add to your project's `.mcp.json`:
 | `find_related(symbol)` | "What touches X?" — symmetric BFS, needs graph |
 | `get_community(symbol)` | "Show me X's cluster" — pre-computed communities |
 | `find_rationale(symbol)` | "Why does X exist?" — links code to docs/ADRs |
+| `trace_feature(feature)` | "How does feature X flow through the code?" — DFS through `calls` edges from token-overlap entry points (Gherkin scenario → step → method) |
 
-The four `find_*` tools return `{graph_loaded: false, ...}` with a clear
-error message when no graphify graph is present, instead of failing
+The five graph-aware tools return `{graph_loaded: false, ...}` with a
+clear error message when no graphify graph is present, instead of failing
 silently.
 
 ## CLI reference
@@ -316,8 +328,10 @@ silently.
 ```text
 stropha index             # walk → chunk → enrich → embed → store
   --repo PATH             # repeatable (multi-repo)
+  --manifest FILE         # YAML manifest with `repos: [{path, enabled}]`
+                          # mutually exclusive with --repo
   --rebuild               # clear index first
-  --enricher NAME         # noop | hierarchical | graph-aware | ollama
+  --enricher NAME         # noop | hierarchical | graph-aware | ollama | mlx
   --embedder NAME         # local | voyage
 
 stropha search "QUERY"    # hybrid retrieval, prints top-K
@@ -384,23 +398,27 @@ Listing what's available right now:
 ```bash
 $ stropha adapters list
     Available adapters
-┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Stage     ┃ Adapter                  ┃
-┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ chunker   │ tree-sitter-dispatch     │
-│ embedder  │ local                    │
-│ embedder  │ voyage                   │
-│ enricher  │ graph-aware              │
-│ enricher  │ hierarchical             │
-│ enricher  │ noop                     │
-│ enricher  │ ollama                   │
-│ retrieval │ hybrid-rrf               │
-│ stream    │ vec-cosine               │
-│ stream    │ fts5-bm25                │
-│ stream    │ like-tokens              │
-│ storage   │ sqlite-vec               │
-│ walker    │ git-ls-files             │
-└───────────┴──────────────────────────┘
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Stage            ┃ Adapter                  ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ chunker          │ tree-sitter-dispatch     │
+│ embedder         │ local                    │
+│ embedder         │ voyage                   │
+│ enricher         │ graph-aware              │
+│ enricher         │ hierarchical             │
+│ enricher         │ mlx                      │
+│ enricher         │ noop                     │
+│ enricher         │ ollama                   │
+│ retrieval        │ hybrid-rrf               │
+│ retrieval-stream │ fts5-bm25                │
+│ retrieval-stream │ graph-vec                │
+│ retrieval-stream │ like-tokens              │
+│ retrieval-stream │ vec-cosine               │
+│ storage          │ sqlite-vec               │
+│ walker           │ filesystem               │
+│ walker           │ git-ls-files             │
+│ walker           │ nested-git               │
+└──────────────────┴──────────────────────────┘
 ```
 
 Adding a new adapter is a self-contained file under
@@ -600,12 +618,17 @@ Tracked in `CLAUDE.md` (live state) and the spec docs:
 - ✅ Phase 1 (MVP MCP)
 - ✅ Pipeline-adapters Phase 1–4 (full adapter framework)
 - ✅ Graphify integration Phase 1.5 (loader + 4 MCP tools + hook installer + L2 enricher)
+- ✅ Trilha A L3 — graph node embeddings as a 4th RRF stream
+- ✅ Phase 3 `trace_feature` tool (Gherkin → step → method)
+- ✅ Phase 5 local enrichers — `ollama` and `mlx` shipped (no cloud required)
+- ✅ Walker variants — `filesystem` (non-git) and `nested-git` (monorepos)
+- ✅ Phase 4 declarative `--manifest` for multi-repo lists
 - ✅ Phase 2 evaluation harness (offline Recall@K + MRR)
-- 🟡 Phase 5 LLM enrichers (`ollama` shipped; `anthropic`, `mlx`, `openai` planned)
-- ⏳ Phase 2 reranker (Voyage `rerank-2.5`)
-- ⏳ Phase 2 Contextual Retrieval
-- ⏳ Phase 3 `trace_feature` tool (Gherkin → step → method)
-- ⏳ Phase 4 storage backends (`qdrant`, `pgvector`, `lancedb`)
+- ⏳ Phase 3 file-watcher soft index
+- ⏳ Phase 2 OpenTelemetry tracing
+- ⏳ Phase 4 storage backends (`lancedb` first — embedded; `qdrant`, `pgvector` later)
+- ⏳ Phase 2 reranker (Voyage `rerank-2.5` — cloud)
+- ⏳ Phase 2 Contextual Retrieval (Anthropic — cloud)
 
 Full design discussion lives in:
 

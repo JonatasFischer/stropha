@@ -35,6 +35,12 @@ from .logging import configure_logging, get_logger
 from .retrieval import SearchEngine
 from .retrieval.graph import (
     find_callers as graph_find_callers,
+    find_rationale as graph_find_rationale,
+    find_related as graph_find_related,
+    get_community as graph_get_community,
+    graph_loaded,
+    has_rationale_edges,
+    trace_feature as graph_trace_feature,
 )
 from .retrieval.graph import (
     find_rationale as graph_find_rationale,
@@ -449,6 +455,33 @@ def find_rationale(
             "message": "Graph loaded but no `rationale_for` edges present yet.",
         }
     return graph_find_rationale(app.storage, symbol, limit=limit)
+
+
+@mcp.tool(
+    title="Trace a feature through the call graph",
+    description=(
+        "Trace a feature description (e.g. 'user submits an answer') down "
+        "through the call graph to surface every code chunk that "
+        "participates in it. Picks entry-point nodes by token overlap, "
+        "then DFS along EXTRACTED `calls` edges. Useful for Gherkin "
+        "scenario → step-definition → method chains, but works for any "
+        "free-text feature. Requires the graphify graph."
+    ),
+)
+def trace_feature(
+    feature: str,
+    *,
+    ctx: Context,
+    max_paths: int = 5,
+    max_depth: int = 6,
+) -> dict:
+    """Walk the call graph from feature-matching entry points."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"feature": feature}
+    return graph_trace_feature(
+        app.storage, feature, max_paths=max_paths, max_depth=max_depth,
+    )
 
 
 @mcp.resource("stropha://stats")

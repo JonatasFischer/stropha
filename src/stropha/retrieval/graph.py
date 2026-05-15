@@ -481,9 +481,135 @@ def has_rationale_edges(storage: Storage) -> bool:
     Used to conditionally register the ``find_rationale`` tool — RFC §2.2 OBJ-6.
     """
     try:
-        row = storage._conn.execute(
+        row = storage._conn.execute(  # noqa: SLF001
             "SELECT 1 FROM graph_edges WHERE relation = 'rationale_for' LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
         return False
     return row is not None
+
+
+# --------------------------------------------------------------------- trace_feature
+
+
+def trace_feature(
+    storage: Storage,
+    feature: str,
+    *,
+    max_paths: int = 5,
+    max_depth: int = 6,
+    confidence: tuple[str, ...] = ("EXTRACTED",),
+) -> dict[str, Any]:
+    """Trace a feature description through the call graph.
+
+    Per spec §6.3.5: turn a free-text feature description (typically a
+    Gherkin scenario or a behavioural outcome) into a chain of code chunks
+    that participate in the feature.
+
+    Strategy:
+      1. Pick the top-N graph nodes whose label loosely matches ``feature``
+         (substring or token overlap). These are the "entry points" — for
+         a BDD codebase they will be step-definition methods; for a plain
+         codebase, top-level functions named after the feature.
+      2. For each entry point, walk outbound ``calls`` edges DFS up to
+         ``max_depth``, collecting unique nodes.
+      3. Hydrate each node with the matching stropha chunk (snippet +
+         line range) so the caller can render the trace inline.
+
+    The result is a list of paths (rooted at entry points) plus a flat
+    set of all unique nodes touched. Cycles are broken at first revisit.
+    """
+    max_paths = max(1, min(max_paths, 20))
+    max_depth = max(1, min(max_depth, 10))
+
+    cur = storage._conn.cursor()  # noqa: SLF001
+
+    # 1. Find candidate entry-point nodes. Token-overlap scoring is more
+    #    forgiving than the exact `resolve_symbol_to_node` because feature
+    #    descriptions are natural language ("user submits an answer").
+    feature_tokens = {
+        t.lower() for t in feature.replace("/", " ").split() if len(t) >= 3
+    }
+    if not feature_tokens:
+        return {"feature": feature, "entries": [], "paths": [], "nodes": []}
+
+    # Pull a manageable candidate pool — graph_nodes is small enough to
+    # scan in Python for non-trivial scoring.
+    rows = cur.execute(
+        "SELECT * FROM graph_nodes WHERE label IS NOT NULL"
+    ).fetchall()
+
+    def score(label: str) -> int:
+        l = label.lower()
+        return sum(1 for t in feature_tokens if t in l)
+
+    scored = [(score(r["label"]), r) for r in rows]
+    scored = [t for t in scored if t[0] > 0]
+    scored.sort(key=lambda t: -t[0])
+    entry_rows = [r for _, r in scored[:max_paths]]
+
+    if not entry_rows:
+        return {"feature": feature, "entries": [], "paths": [], "nodes": []}
+
+    # 2. DFS each entry point along outbound `calls` edges.
+    conf_placeholders = ",".join("?" * len(confidence))
+    paths: list[dict[str, Any]] = []
+    all_node_ids: set[str] = set()
+    for entry in entry_rows:
+        entry_id = entry["node_id"]
+        all_node_ids.add(entry_id)
+        chain: list[dict[str, Any]] = [_hydrate_node(storage, entry).as_dict()]
+        visited = {entry_id}
+        stack: list[tuple[str, int]] = [(entry_id, 0)]
+        while stack:
+            node_id, depth = stack.pop()
+            if depth >= max_depth:
+                continue
+            edges = cur.execute(
+                f"""SELECT target FROM graph_edges
+                    WHERE source = ? AND relation = 'calls'
+                      AND confidence IN ({conf_placeholders})
+                    LIMIT 8""",
+                (node_id, *confidence),
+            ).fetchall()
+            for er in edges:
+                tgt = er["target"]
+                if tgt in visited:
+                    continue
+                visited.add(tgt)
+                all_node_ids.add(tgt)
+                tgt_row = cur.execute(
+                    "SELECT * FROM graph_nodes WHERE node_id = ?", (tgt,)
+                ).fetchone()
+                if tgt_row is None:
+                    continue
+                chain.append(_hydrate_node(storage, tgt_row).as_dict())
+                stack.append((tgt, depth + 1))
+                if len(chain) >= 30:  # cap per entry to keep responses readable
+                    break
+            if len(chain) >= 30:
+                break
+        paths.append({
+            "entry": _hydrate_node(storage, entry).as_dict(),
+            "depth_explored": max_depth,
+            "chain": chain,
+            "chain_size": len(chain),
+        })
+
+    return {
+        "feature": feature,
+        "entries": [_hydrate_node(storage, e).as_dict() for e in entry_rows],
+        "paths": paths,
+        "nodes": [
+            _hydrate_node(storage, cur.execute(
+                "SELECT * FROM graph_nodes WHERE node_id = ?", (nid,)
+            ).fetchone()).as_dict()
+            for nid in sorted(all_node_ids)
+            if cur.execute(
+                "SELECT 1 FROM graph_nodes WHERE node_id = ? LIMIT 1", (nid,)
+            ).fetchone()
+        ],
+        "provenance": "graphify-out/graph.json (calls edges, conf={})".format(
+            ",".join(confidence)
+        ),
+    }

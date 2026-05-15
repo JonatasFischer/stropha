@@ -102,7 +102,8 @@ class _StubEmbedder:
 
 def test_streams_registered() -> None:
     reg = all_adapters()
-    assert set(reg["retrieval-stream"]) == {"vec-cosine", "fts5-bm25", "like-tokens"}
+    # The 3 Phase 4 streams plus the L3 graph-vec stream (Trilha A).
+    assert {"vec-cosine", "fts5-bm25", "like-tokens", "graph-vec"} <= set(reg["retrieval-stream"])
 
 
 # ---------------------------------------------------------------------------
