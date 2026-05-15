@@ -1,0 +1,33 @@
+# stropha eval golden set v0.1 — Phase 2 baseline.
+# Format: one JSON per line. See src/stropha/eval/harness.py for schema.
+# Tags drive per-tag breakdowns in the eval report.
+{"id": "rrf-001", "query": "reciprocal rank fusion of multiple ranked lists", "expected_paths": ["src/stropha/retrieval/rrf.py"], "expected_symbols": ["rrf_fuse"], "tags": ["retrieval", "symbol-lookup"]}
+{"id": "storage-001", "query": "where is the SQLite storage with sqlite-vec", "expected_paths": ["src/stropha/storage/sqlite.py"], "expected_symbols": ["Storage"], "tags": ["storage", "symbol-lookup"]}
+{"id": "storage-002", "query": "chunk freshness check for drift detection", "expected_paths": ["src/stropha/storage/sqlite.py"], "expected_symbols": ["chunk_is_fresh"], "tags": ["storage", "drift"]}
+{"id": "embedder-001", "query": "voyage code 3 embedder", "expected_paths": ["src/stropha/adapters/embedder/voyage.py"], "expected_symbols": ["VoyageEmbedder"], "tags": ["embedder", "symbol-lookup"]}
+{"id": "embedder-002", "query": "local fastembed onnx embedder", "expected_paths": ["src/stropha/adapters/embedder/local.py"], "expected_symbols": ["LocalEmbedder"], "tags": ["embedder", "symbol-lookup"]}
+{"id": "chunker-001", "query": "tree sitter ast chunker dispatcher per language", "expected_paths": ["src/stropha/adapters/chunker/tree_sitter_dispatch.py"], "expected_symbols": ["TreeSitterDispatchChunker"], "tags": ["chunker"]}
+{"id": "chunker-002", "query": "vue single file component chunker", "expected_paths": ["src/stropha/adapters/chunker/languages/sfc_split.py"], "expected_symbols": ["SfcSplitLanguageChunker"], "tags": ["chunker", "language"]}
+{"id": "chunker-003", "query": "gherkin feature scenario chunker", "expected_paths": ["src/stropha/adapters/chunker/languages/regex_feature_scenario.py"], "expected_symbols": ["RegexFeatureScenarioLanguageChunker"], "tags": ["chunker", "language"]}
+{"id": "walker-001", "query": "git ls-files walker discover indexable files", "expected_paths": ["src/stropha/adapters/walker/git_ls_files.py"], "expected_symbols": ["GitLsFilesWalker"], "tags": ["walker"]}
+{"id": "enricher-001", "query": "hierarchical enricher prepend parent skeleton", "expected_paths": ["src/stropha/adapters/enricher/hierarchical.py"], "expected_symbols": ["HierarchicalEnricher"], "tags": ["enricher"]}
+{"id": "enricher-002", "query": "graph aware enricher community labels embedding text", "expected_paths": ["src/stropha/adapters/enricher/graph_aware.py"], "expected_symbols": ["GraphAwareEnricher"], "tags": ["enricher", "graphify"]}
+{"id": "retrieval-001", "query": "hybrid rrf retrieval with three streams", "expected_paths": ["src/stropha/adapters/retrieval/hybrid_rrf.py"], "expected_symbols": ["HybridRrfRetrieval"], "tags": ["retrieval"]}
+{"id": "retrieval-002", "query": "vec cosine dense retrieval stream", "expected_paths": ["src/stropha/adapters/retrieval/streams/vec_cosine.py"], "expected_symbols": ["VecCosineStream"], "tags": ["retrieval", "stream"]}
+{"id": "retrieval-003", "query": "fts5 bm25 sparse retrieval", "expected_paths": ["src/stropha/adapters/retrieval/streams/fts5_bm25.py"], "expected_symbols": ["Fts5Bm25Stream"], "tags": ["retrieval", "stream"]}
+{"id": "retrieval-004", "query": "symbol token like retrieval stream", "expected_paths": ["src/stropha/adapters/retrieval/streams/like_tokens.py"], "expected_symbols": ["LikeTokensStream"], "tags": ["retrieval", "stream"]}
+{"id": "pipeline-001", "query": "pipeline orchestrator walker chunker enricher embedder", "expected_paths": ["src/stropha/pipeline/pipeline.py"], "expected_symbols": ["Pipeline"], "tags": ["pipeline"]}
+{"id": "pipeline-002", "query": "adapter registry decorator", "expected_paths": ["src/stropha/pipeline/registry.py"], "expected_symbols": ["register_adapter"], "tags": ["pipeline"]}
+{"id": "pipeline-003", "query": "build pipeline stages from resolved config", "expected_paths": ["src/stropha/pipeline/builder.py"], "expected_symbols": ["build_stages"], "tags": ["pipeline"]}
+{"id": "config-001", "query": "load pipeline config from yaml plus env vars", "expected_paths": ["src/stropha/pipeline/config.py"], "expected_symbols": ["load_pipeline_config"], "tags": ["config"]}
+{"id": "git-001", "query": "detect git repo identity url branch commit", "expected_paths": ["src/stropha/ingest/git_meta.py"], "expected_symbols": ["detect"], "tags": ["git"]}
+{"id": "graph-001", "query": "graphify loader populate graph_nodes graph_edges from json", "expected_paths": ["src/stropha/ingest/graphify_loader.py"], "expected_symbols": ["GraphifyLoader"], "tags": ["graphify"]}
+{"id": "graph-002", "query": "find callers of a symbol in the graph", "expected_paths": ["src/stropha/retrieval/graph.py"], "expected_symbols": ["find_callers"], "tags": ["graphify", "tools"]}
+{"id": "graph-003", "query": "find rationale that explains a code symbol", "expected_paths": ["src/stropha/retrieval/graph.py"], "expected_symbols": ["find_rationale"], "tags": ["graphify", "tools"]}
+{"id": "hook-001", "query": "post commit hook installer atomic markers", "expected_paths": ["src/stropha/tools/hook_install.py"], "expected_symbols": ["install"], "tags": ["hook"]}
+{"id": "mcp-001", "query": "MCP server fastmcp lifespan startup", "expected_paths": ["src/stropha/server.py"], "expected_symbols": ["main"], "tags": ["mcp"]}
+{"id": "mcp-002", "query": "search code MCP tool hybrid", "expected_paths": ["src/stropha/server.py"], "expected_symbols": ["search_code"], "tags": ["mcp", "tools"]}
+{"id": "model-001", "query": "Chunk model embedding text and enricher id", "expected_paths": ["src/stropha/models.py"], "expected_symbols": ["Chunk"], "tags": ["model"]}
+{"id": "model-002", "query": "search hit model with repo info", "expected_paths": ["src/stropha/models.py"], "expected_symbols": ["SearchHit"], "tags": ["model"]}
+{"id": "errors-001", "query": "structured exception hierarchy adapter pipeline error", "expected_paths": ["src/stropha/errors.py"], "expected_symbols": ["AdapterError"], "tags": ["errors"]}
+{"id": "log-001", "query": "structlog configure logging structured", "expected_paths": ["src/stropha/logging.py"], "expected_symbols": ["configure_logging"], "tags": ["logging"]}

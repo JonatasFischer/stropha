@@ -30,7 +30,11 @@ log = get_logger(__name__)
 #     embedded), `chunks.enricher_id` (which adapter produced it), and the
 #     `enrichments` cache table. Enables drift detection: changing enricher
 #     config triggers re-enrich + re-embed without `--rebuild`.
-SCHEMA_VERSION = 3
+# v4: graphify integration (RFC §9 Fase 1.5a) — `graph_nodes`, `graph_edges`
+#     and `graph_meta` tables backing `find_callers` / `find_related` /
+#     `get_community` / `find_rationale` MCP tools. Conditional on
+#     `graphify-out/graph.json` being present at index time.
+SCHEMA_VERSION = 4
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -283,6 +287,52 @@ class Storage:
             );
             CREATE INDEX IF NOT EXISTS idx_enrichments_enricher
                 ON enrichments(enricher_id);
+            """
+        )
+
+        # v4: graphify integration tables. Optional — populated by
+        # GraphifyLoader iff `graphify-out/graph.json` is present.
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                node_id          TEXT PRIMARY KEY,
+                label            TEXT NOT NULL,
+                file_type        TEXT,
+                source_file      TEXT,
+                source_location  TEXT,
+                community_id     INTEGER,
+                community_label  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_nodes_label
+                ON graph_nodes(label);
+            CREATE INDEX IF NOT EXISTS idx_graph_nodes_source_file
+                ON graph_nodes(source_file);
+            CREATE INDEX IF NOT EXISTS idx_graph_nodes_community
+                ON graph_nodes(community_id);
+
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                source           TEXT NOT NULL,
+                target           TEXT NOT NULL,
+                relation         TEXT NOT NULL,
+                confidence       TEXT NOT NULL,
+                confidence_score REAL,
+                context          TEXT,
+                source_file      TEXT,
+                source_location  TEXT,
+                weight           REAL,
+                PRIMARY KEY (source, target, relation, source_file, source_location)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_target_relation
+                ON graph_edges(target, relation, confidence);
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_source_relation
+                ON graph_edges(source, relation, confidence);
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_relation
+                ON graph_edges(relation, confidence);
+
+            CREATE TABLE IF NOT EXISTS graph_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
 
@@ -863,6 +913,8 @@ class Storage:
         ).fetchone()["n"]
         size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
         repos = [r.model_dump() for r in self.list_repos()]
+        # Schema v4: graphify mirror summary (None when never loaded).
+        graph_stats = self._graph_stats()
         return {
             "db_path": str(self._db_path),
             "size_bytes": size_bytes,
@@ -873,6 +925,48 @@ class Storage:
             "enrichers": enrichers,
             "enrichment_cache_size": int(enrichment_cache),
             "repos": repos,
+            "graph": graph_stats,
+        }
+
+    def _graph_stats(self) -> dict[str, Any] | None:
+        """Aggregate graphify mirror state. Returns None when never loaded."""
+        cur = self._conn.cursor()
+        # graph_meta is created at v4 but the row only exists after a load.
+        try:
+            row = cur.execute(
+                "SELECT value FROM graph_meta WHERE key = 'last_loaded_at'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        n_nodes = cur.execute("SELECT COUNT(*) AS n FROM graph_nodes").fetchone()["n"]
+        n_edges = cur.execute("SELECT COUNT(*) AS n FROM graph_edges").fetchone()["n"]
+        by_conf = {
+            r["confidence"]: int(r["n"])
+            for r in cur.execute(
+                "SELECT confidence, COUNT(*) AS n FROM graph_edges GROUP BY confidence"
+            ).fetchall()
+        }
+        n_communities = cur.execute(
+            "SELECT COUNT(DISTINCT community_id) AS n FROM graph_nodes WHERE community_id IS NOT NULL"
+        ).fetchone()["n"]
+        path_row = cur.execute(
+            "SELECT value FROM graph_meta WHERE key = 'graph_path'"
+        ).fetchone()
+        conf_row = cur.execute(
+            "SELECT value FROM graph_meta WHERE key = 'confidence_filter'"
+        ).fetchone()
+        return {
+            "nodes": int(n_nodes),
+            "edges_total": int(n_edges),
+            "edges_by_confidence": by_conf,
+            "communities": int(n_communities),
+            "last_loaded_at": row["value"],
+            "graph_path": path_row["value"] if path_row else None,
+            "confidence_filter": (
+                (conf_row["value"] or "").split(",") if conf_row else None
+            ),
         }
 
     def close(self) -> None:

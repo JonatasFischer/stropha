@@ -9,7 +9,6 @@ import pytest
 
 from stropha.ingest.git_meta import RepoIdentity, detect, normalize_url
 
-
 # ---- normalize_url --------------------------------------------------------
 
 @pytest.mark.parametrize(

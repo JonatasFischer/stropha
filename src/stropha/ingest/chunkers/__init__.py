@@ -3,4 +3,4 @@
 from .base import LanguageChunker
 from .fallback import FallbackChunker
 
-__all__ = ["LanguageChunker", "FallbackChunker"]
+__all__ = ["FallbackChunker", "LanguageChunker"]

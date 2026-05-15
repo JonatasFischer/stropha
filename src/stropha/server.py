@@ -33,6 +33,22 @@ from .embeddings.base import Embedder
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
 from .retrieval import SearchEngine
+from .retrieval.graph import (
+    find_callers as graph_find_callers,
+)
+from .retrieval.graph import (
+    find_rationale as graph_find_rationale,
+)
+from .retrieval.graph import (
+    find_related as graph_find_related,
+)
+from .retrieval.graph import (
+    get_community as graph_get_community,
+)
+from .retrieval.graph import (
+    graph_loaded,
+    has_rationale_edges,
+)
 from .storage import Storage
 
 log = get_logger(__name__)
@@ -80,11 +96,20 @@ Tool selection guide:
 - Free-text or conceptual query → search_code
 - Known symbol / fully-qualified name → get_symbol  (cheaper, exact)
 - Need a file's structure before reading → get_file_outline
+- "Who calls X?" → find_callers (structural — uses graphify graph)
+- "What relates to X?" → find_related (structural — graph traversal)
+- "Show me the community of X" → get_community (cluster grouping)
+- "Why was X built this way?" → find_rationale (links code to docs/ADRs)
+
+The find_* tools require a graphify graph in `graphify-out/graph.json`.
+When the graph is missing they return {"graph_loaded": false, ...} —
+run `graphify .` (or the post-commit hook installed by `stropha hook install`)
+to bootstrap.
 """
 
 
 mcp = FastMCP(
-    name="stropha",
+    name="stropha_rag",
     instructions=_INSTRUCTIONS,
     lifespan=_lifespan,
 )
@@ -161,6 +186,12 @@ class StatsPayload(BaseModel):
     index_dim: int
     models: list[dict]
     repos: list[RepoSummary] = Field(default_factory=list)
+    enrichers: list[dict] = Field(default_factory=list)
+    enrichment_cache_size: int = 0
+    graph: dict | None = Field(
+        default=None,
+        description="Graphify mirror summary (None when no graph loaded).",
+    )
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -295,6 +326,129 @@ def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
         )
         for r in rows
     ]
+
+
+# ---- graph tools (RFC §5 — Trilha A 1.5b) ----------------------------------
+# Always registered for tool-discovery stability. When the graphify mirror
+# tables are empty (no `graphify-out/graph.json` ever loaded), the tools
+# short-circuit with `{graph_loaded: False, message: ...}` so the calling
+# agent gets actionable feedback instead of a silent empty list.
+
+
+def _graph_unavailable() -> dict:
+    return {
+        "graph_loaded": False,
+        "message": (
+            "graphify graph not loaded. Run `graphify .` in the repo root to "
+            "bootstrap, then `stropha index` to mirror it into SQLite."
+        ),
+    }
+
+
+@mcp.tool(
+    title="Find callers of a symbol",
+    description=(
+        "Lists code locations that call `symbol`. Direct traversal over the "
+        "graphify mirror filtered by relation='calls' and confidence='EXTRACTED'. "
+        "Returns more precise results than `search_code` for queries like "
+        "'who calls X?'. Requires `graphify-out/graph.json` (run `graphify .` "
+        "to bootstrap)."
+    ),
+)
+def find_callers(
+    symbol: str,
+    *,
+    ctx: Context,
+    depth: int = 1,
+    limit: int = 20,
+) -> dict:
+    """Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3)."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"symbol": symbol}
+    return graph_find_callers(app.storage, symbol, depth=depth, limit=limit)
+
+
+@mcp.tool(
+    title="Find related nodes",
+    description=(
+        "Symmetric BFS over the graphify graph (in + out edges). Useful when "
+        "you don't know the relationship type ahead of time. Pass `relations` "
+        "to filter (e.g. ['calls','implements','references']). Depth capped at 3."
+    ),
+)
+def find_related(
+    symbol: str,
+    *,
+    ctx: Context,
+    depth: int = 1,
+    limit: int = 20,
+    relations: list[str] | None = None,
+) -> dict:
+    """Return any node connected to ``symbol`` via the graph."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"symbol": symbol}
+    return graph_find_related(
+        app.storage, symbol, depth=depth, limit=limit,
+        relations=tuple(relations) if relations else None,
+    )
+
+
+@mcp.tool(
+    title="Get community of a symbol",
+    description=(
+        "Return all nodes in the same community as `symbol_or_community_id`. "
+        "Communities are pre-computed by graphify clustering and represent "
+        "tight cohesive groups (e.g. 'Hybrid Retrieval & RRF'). Use this to "
+        "see everything that participates in a coherent feature/module."
+    ),
+)
+def get_community(
+    symbol_or_community_id: str,
+    *,
+    ctx: Context,
+    limit: int = 50,
+) -> dict:
+    """Return the community membership of a symbol or community id."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"query": symbol_or_community_id}
+    # Accept stringified int as community id
+    query: str | int = symbol_or_community_id
+    try:
+        query = int(symbol_or_community_id)
+    except (ValueError, TypeError):
+        pass
+    return graph_get_community(app.storage, query, limit=limit)
+
+
+@mcp.tool(
+    title="Find rationale for a symbol",
+    description=(
+        "Return rationale-style nodes (typically docs / ADRs / design "
+        "comments) that explain why `symbol` exists or was built this way. "
+        "Walks `rationale_for` edges from the graphify graph. Returns empty "
+        "when no rationale edges target the symbol."
+    ),
+)
+def find_rationale(
+    symbol: str,
+    *,
+    ctx: Context,
+    limit: int = 10,
+) -> dict:
+    """Return rationale nodes (docs/ADRs) explaining ``symbol``."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"symbol": symbol}
+    if not has_rationale_edges(app.storage):
+        return {
+            "symbol": symbol,
+            "rationale": [],
+            "message": "Graph loaded but no `rationale_for` edges present yet.",
+        }
+    return graph_find_rationale(app.storage, symbol, limit=limit)
 
 
 @mcp.resource("stropha://stats")

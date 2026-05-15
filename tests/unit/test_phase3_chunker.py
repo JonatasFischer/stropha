@@ -20,7 +20,6 @@ from stropha.ingest.chunker import Chunker as LegacyChunker
 from stropha.models import SourceFile
 from stropha.pipeline.registry import all_adapters
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

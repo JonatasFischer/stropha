@@ -16,11 +16,9 @@ import pytest
 
 from stropha.adapters.enricher.hierarchical import HierarchicalEnricher
 from stropha.adapters.enricher.noop import NoopEnricher
-from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import Chunk
 from stropha.pipeline.pipeline import Pipeline
 from stropha.storage import Storage
-
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -55,7 +53,7 @@ class _StubEmbedder:
         return 16
 
     @property
-    def config_schema(self):  # noqa: D401
+    def config_schema(self):
         from pydantic import BaseModel
 
         class _C(BaseModel):

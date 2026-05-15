@@ -20,7 +20,6 @@ from stropha.models import Chunk
 from stropha.pipeline import build_stages, load_pipeline_config
 from stropha.pipeline.registry import all_adapters
 
-
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------

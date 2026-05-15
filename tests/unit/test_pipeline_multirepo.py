@@ -15,7 +15,6 @@ from stropha.ingest.pipeline import IndexPipeline
 from stropha.models import SourceFile
 from stropha.storage import Storage
 
-
 # ---- a deterministic stub embedder ---------------------------------------
 
 class _StubEmbedder(Embedder):

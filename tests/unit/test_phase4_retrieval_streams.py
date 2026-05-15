@@ -27,7 +27,6 @@ from stropha.errors import ConfigError
 from stropha.models import SearchHit
 from stropha.pipeline.registry import all_adapters
 
-
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------

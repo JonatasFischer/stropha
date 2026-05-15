@@ -19,7 +19,6 @@ from stropha.pipeline import (
 )
 from stropha.pipeline.registry import _REGISTRY  # type: ignore[attr-defined]
 
-
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -53,7 +52,7 @@ def test_register_adapter_requires_config_attribute() -> None:
     with pytest.raises(AdapterError):
 
         @register_adapter(stage="enricher", name="broken-fixture")
-        class _Broken:  # noqa: D401
+        class _Broken:
             """Missing ``Config`` attribute."""
 
     # Make sure no half-registered entry leaked.

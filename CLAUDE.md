@@ -141,11 +141,54 @@ Pipeline-adapters Phase 4 ✓:
 - [x] 12 new unit tests (`test_phase4_retrieval_streams.py`). Total
       suite: **120 tests, all green**.
 
-Pipeline-adapters Phase 5 (pending — sob demanda):
-- [ ] LLM enricher adapters (`ollama`, `anthropic`, `mlx`, `openai`).
+Graphify integration (per `docs/architecture/stropha-graphify-integration.md`):
+- [x] **Fase 1.5a — Graph loader & SQLite schema v4**:
+      `graph_nodes` / `graph_edges` / `graph_meta` tables, `GraphifyLoader`
+      with idempotent + transactional load, mtime-based staleness, env
+      var `STROPHA_GRAPH_CONFIDENCE` filter, `Storage.stats()['graph']`
+      reporting. Auto-loaded by `Pipeline.run()` when graph is stale.
+- [x] **Fase 1.5b — MCP tools** `find_callers`, `find_related`,
+      `get_community`, `find_rationale` (all in
+      `src/stropha/retrieval/graph.py`). Symbol resolution via exact →
+      dotted-suffix → substring fallback. Returns
+      `{graph_loaded: false, ...}` when the mirror is empty so the LLM
+      gets actionable feedback. `find_rationale` only meaningful when
+      `rationale_for` edges exist (graceful empty otherwise).
+- [x] **Fase 1.5c — Hook installer CLI**: `stropha hook install /
+      uninstall / status` with atomic write between markers, version
+      detection (`v=2`), `core.hooksPath` honoured per RFC §6.3,
+      coexistence warning when graphify-hook present.
+- [x] **L2 augmentation — graph-aware enricher**:
+      `adapters/enricher/graph_aware.py` prepends matching community
+      label + node label to every chunk's `embedding_text`. Builder
+      late-injects `Storage` so the enricher can query the graph mirror.
+      `adapter_id` digests every flag → drift detection auto-rebuilds.
+- [x] **MCP server name** changed to `stropha_rag` (FastMCP +
+      `opencode.json`) so LLM clients understand the server is a RAG.
+- [x] 71 new unit tests (`test_graphify_loader.py` 19,
+      `test_graph_tools.py` 22, `test_hook_install.py` 17,
+      `test_graph_aware_enricher.py` 13).
+
+Phase 2 evaluation harness (per spec §16):
+- [x] `src/stropha/eval/harness.py`: golden JSONL loader,
+      `run_eval()` returning `EvalReport` with `Recall@K` + `MRR` +
+      per-tag breakdowns. Tolerates both real `SearchHit` and mocked
+      hits (so retrieval stack can be stubbed in tests).
+- [x] `tests/eval/golden.jsonl`: ~30 baseline cases tagged by feature
+      area (retrieval, storage, chunker, …).
+- [x] CLI `stropha eval` exits non-zero when `Recall@K < 0.85` (CI hook).
+- [x] 12 new unit tests (`test_eval_harness.py`).
+
+Pipeline-adapters Phase 5 (in progress):
+- [x] `enricher/ollama` — local LLM one-line summarisation, pure stdlib
+      HTTP, fails gracefully (returns raw content on any error). 14
+      mocked tests cover success, all failure paths, and health probes.
+- [ ] `enricher/anthropic`, `enricher/mlx`, `enricher/openai`.
 - [ ] Walker variants (`filesystem`, `nested-git`).
 - [ ] Storage variants (`qdrant`, `pgvector`, `lancedb`).
 - [ ] Retrieval `hybrid-rrf-rerank` (Voyage rerank-2.5 stage hook).
+
+**Total suite: 217 tests, all green.**
 
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 

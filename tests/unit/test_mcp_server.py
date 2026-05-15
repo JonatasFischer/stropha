@@ -10,7 +10,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -51,7 +50,6 @@ def _recv(proc: subprocess.Popen, timeout_s: float = 10.0) -> dict:
 def test_mcp_handshake_and_tool_call(tmp_path: Path) -> None:
     """Spawn the server, initialize, list tools, call search_code."""
     # Build a tiny indexed DB so the server has something to search.
-    from stropha.config import Config
     from stropha.embeddings.local import LocalEmbedder
     from stropha.ingest.pipeline import IndexPipeline
     from stropha.storage import Storage

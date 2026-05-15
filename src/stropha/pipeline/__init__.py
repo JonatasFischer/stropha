@@ -17,17 +17,17 @@ from .registry import (
 )
 
 __all__ = [
-    "Stage",
-    "StageContext",
-    "StageHealth",
     "BuiltStages",
-    "build_stages",
-    "load_pipeline_config",
     "Pipeline",
     "PipelineStats",
     "RepoStats",
-    "register_adapter",
-    "lookup_adapter",
-    "available_for_stage",
+    "Stage",
+    "StageContext",
+    "StageHealth",
     "all_adapters",
+    "available_for_stage",
+    "build_stages",
+    "load_pipeline_config",
+    "lookup_adapter",
+    "register_adapter",
 ]

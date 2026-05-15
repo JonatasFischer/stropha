@@ -83,6 +83,21 @@ def build_stages(
             adapter_id=storage.adapter_id,
         )
 
+        # Late inject storage into enrichers that need it (e.g. graph-aware
+        # enricher uses graph_nodes table). Adapters opt-in via setattr or
+        # by accepting `storage` in __init__.
+        if hasattr(enricher, "_storage") and getattr(enricher, "_storage", None) is None:
+            try:
+                enricher._storage = storage  # type: ignore[attr-defined]
+                log.info(
+                    "pipeline.adapter.injected",
+                    stage="enricher",
+                    adapter=enricher.adapter_name,
+                    dependency="storage",
+                )
+            except (AttributeError, TypeError):
+                pass
+
         retrieval_section = resolved_config.get("retrieval") or {}
         retrieval_name = retrieval_section.get("adapter") or "hybrid-rrf"
         retrieval_cls = lookup_adapter("retrieval", retrieval_name)

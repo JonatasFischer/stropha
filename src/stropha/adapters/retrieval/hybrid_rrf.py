@@ -39,7 +39,6 @@ from ...stages.retrieval import RetrievalStage
 from ...stages.retrieval_stream import RetrievalStreamStage
 from ...stages.storage import StorageStage
 
-
 # Legacy single-stream defaults — preserves Phase 1/2 behavior.
 _DEFAULT_STREAMS: dict[str, dict[str, Any] | None] = {
     "dense":  {"adapter": "vec-cosine",  "config": {"k": 50}},

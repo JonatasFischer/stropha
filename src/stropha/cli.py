@@ -19,7 +19,6 @@ from rich.table import Table
 
 from . import __version__
 from .config import Config
-from .embeddings import build_embedder
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
 from .pipeline import (
@@ -28,8 +27,6 @@ from .pipeline import (
     build_stages,
     load_pipeline_config,
 )
-from .retrieval import SearchEngine
-from .storage import Storage
 
 load_dotenv()
 app = typer.Typer(
@@ -394,6 +391,243 @@ def adapters_list(
         for n in names:
             table.add_row(s, n)
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation harness (Phase 2 §16 — golden set + Recall@K + MRR)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def eval(
+    golden: Path = typer.Option(
+        Path("tests/eval/golden.jsonl"),
+        "--golden", "-g",
+        help="Path to JSONL golden file (one case per line).",
+    ),
+    top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=100),
+    tag: str | None = typer.Option(
+        None, "--tag",
+        help="Run only cases with this tag (e.g. `--tag retrieval`).",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json",
+        help="Emit machine-readable JSON instead of the rich table.",
+    ),
+) -> None:
+    """Run the offline eval harness against the golden dataset."""
+    from .eval import load_golden, run_eval
+
+    if not golden.is_file():
+        console.print(f"[red]Golden file not found:[/red] {golden}")
+        raise typer.Exit(code=1)
+
+    try:
+        cases = load_golden(golden)
+    except ValueError as exc:
+        console.print(f"[red]Golden file invalid:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if tag:
+        cases = [c for c in cases if tag in c.tags]
+        if not cases:
+            console.print(f"[yellow]No cases with tag {tag!r}.[/yellow]")
+            raise typer.Exit(code=1)
+
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+    except StrophaError as exc:
+        console.print(f"[red]Pipeline build error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        with built.storage:  # type: ignore[union-attr]
+            report = run_eval(cases, built.retrieval, top_k=top_k)
+    except StrophaError as exc:
+        console.print(f"[red]Eval failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if json_out:
+        import json as _json
+
+        payload = {
+            "summary": report.summary(),
+            "results": [
+                {
+                    "id": r.case.id, "query": r.case.query,
+                    "tags": list(r.case.tags),
+                    "hit": r.hit, "rank": r.rank_of_first_hit,
+                    "matched_path": r.matched_path,
+                    "matched_symbol": r.matched_symbol,
+                }
+                for r in report.results
+            ],
+            "by_tag": {
+                t: sub.summary() for t, sub in report.by_tag().items()
+            },
+        }
+        console.print_json(_json.dumps(payload))
+        raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
+
+    table = Table(
+        title=f"Evaluation — {report.n} cases (top_k={report.top_k})",
+        show_lines=False,
+    )
+    table.add_column("Case", style="cyan")
+    table.add_column("Query", overflow="fold")
+    table.add_column("Hit", justify="center")
+    table.add_column("Rank", justify="right")
+    table.add_column("Tags", overflow="fold")
+    for r in report.results:
+        marker = "✓" if r.hit else "✗"
+        rank_s = str(r.rank_of_first_hit) if r.rank_of_first_hit else "—"
+        table.add_row(r.case.id, r.case.query[:80], marker, rank_s, ",".join(r.case.tags))
+    console.print(table)
+
+    summary = report.summary()
+    console.print(
+        f"[bold]Summary:[/bold] {summary['hits']}/{summary['cases']} hits · "
+        f"recall@{report.top_k}={summary[f'recall@{report.top_k}']} · "
+        f"mrr={summary['mrr']}"
+    )
+    by_tag = report.by_tag()
+    if len(by_tag) > 1:
+        tag_table = Table(title="By tag", show_lines=False)
+        tag_table.add_column("Tag", style="cyan")
+        tag_table.add_column("Cases", justify="right")
+        tag_table.add_column(f"Recall@{report.top_k}", justify="right")
+        tag_table.add_column("MRR", justify="right")
+        for t, sub in sorted(by_tag.items()):
+            tag_table.add_row(
+                t, str(sub.n),
+                f"{sub.recall_at_k:.2f}", f"{sub.mrr:.2f}",
+            )
+        console.print(tag_table)
+
+    # Non-zero exit when below the spec threshold so CI catches regressions.
+    raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
+
+
+# ---------------------------------------------------------------------------
+# Hook management (RFC §7.1 — Trilha A 1.5c)
+# ---------------------------------------------------------------------------
+
+hook_app = typer.Typer(
+    name="hook",
+    help="Manage the post-commit hook (refreshes graphify graph + stropha index).",
+    no_args_is_help=True,
+)
+app.add_typer(hook_app, name="hook")
+
+
+def _resolve_hook_target(target: Path | None) -> Path:
+    """Default to the configured target_repo, then cwd. Validate ``.git/`` exists."""
+    if target is None:
+        cfg = _load_config()
+        target = cfg.target_repo or Path.cwd()
+    target = target.expanduser().resolve()
+    if not (target / ".git").exists():
+        console.print(f"[red]Not a git repo:[/red] {target}")
+        raise typer.Exit(code=1)
+    return target
+
+
+@hook_app.command("install")
+def hook_install_cmd(
+    target: Path = typer.Option(
+        None, "--target", "-t",
+        help="Repo to install into. Defaults to STROPHA_TARGET_REPO or cwd.",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Silence the warning when a graphify-hook coexists.",
+    ),
+) -> None:
+    """Install or refresh the post-commit hook for the target repo."""
+    from .tools.hook_install import install
+
+    repo = _resolve_hook_target(target)
+    try:
+        result = install(repo, force=force)
+    except (ValueError, OSError) as exc:
+        console.print(f"[red]Install failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    marker = {"created": "✓", "updated": "✓", "appended": "+"}.get(result["action"], "?")
+    console.print(
+        f"{marker} Hook {result['action']}: [cyan]{result['hook_path']}[/cyan]"
+        f"  (v={result['version']})"
+    )
+    if result["coexist_warning"]:
+        console.print(
+            "[yellow]⚠ A `graphify hook` block was detected in the same file.[/yellow]\n"
+            "  This stropha hook already calls `graphify update`; keeping both "
+            "will duplicate work.\n"
+            "  Either run `graphify hook uninstall` or pass `--force` to silence."
+        )
+    console.print(
+        f"[dim]Logs: {result['log_path']}[/dim]\n"
+        "Test with: [cyan]git commit --allow-empty -m 'hook test'[/cyan] then "
+        f"[cyan]tail -f {result['log_path']}[/cyan]"
+    )
+
+
+@hook_app.command("uninstall")
+def hook_uninstall_cmd(
+    target: Path = typer.Option(
+        None, "--target", "-t",
+        help="Repo to uninstall from. Defaults to STROPHA_TARGET_REPO or cwd.",
+    ),
+) -> None:
+    """Remove the stropha block from the post-commit hook."""
+    from .tools.hook_install import uninstall
+
+    repo = _resolve_hook_target(target)
+    result = uninstall(repo)
+    if result["action"] == "noop":
+        console.print(f"[yellow]Nothing to do:[/yellow] {result['reason']}")
+        raise typer.Exit(code=0)
+    if result["action"] == "removed":
+        console.print(f"[green]✓ Hook file removed:[/green] {result['hook_path']}")
+    else:
+        console.print(
+            f"[green]✓ stropha block removed; rest of hook left intact:[/green] "
+            f"{result['hook_path']}"
+        )
+
+
+@hook_app.command("status")
+def hook_status_cmd(
+    target: Path = typer.Option(
+        None, "--target", "-t",
+        help="Repo to inspect. Defaults to STROPHA_TARGET_REPO or cwd.",
+    ),
+) -> None:
+    """Report whether the post-commit hook is installed."""
+    from .tools.hook_install import HOOK_VERSION, status
+
+    repo = _resolve_hook_target(target)
+    s = status(repo)
+    table = Table(title=f"Hook status — {repo}", show_lines=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", overflow="fold")
+    table.add_row("Hook file", str(s.hook_path))
+    if s.installed:
+        ver_marker = "✓" if s.version == HOOK_VERSION else "⚠ outdated"
+        table.add_row("Installed", f"yes (v={s.version}) {ver_marker}")
+    else:
+        table.add_row("Installed", "no")
+    table.add_row("Graphify cohabit", "yes" if s.graphify_cohabit else "no")
+    table.add_row("Log file", str(s.log_path))
+    if s.log_path.is_file():
+        try:
+            size = s.log_path.stat().st_size
+            table.add_row("Log size", f"{size} bytes")
+        except OSError:
+            pass
+    console.print(table)
+    raise typer.Exit(code=0 if s.installed else 1)
 
 
 if __name__ == "__main__":

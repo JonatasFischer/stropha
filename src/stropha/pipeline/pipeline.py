@@ -145,7 +145,45 @@ class Pipeline:
         self._storage.set_meta("active_enricher_id", self._enricher.adapter_id)
         self._storage.set_meta("active_embedder_id", self._embedder.adapter_id)
         self._storage.commit()
+
+        # Optional graphify graph mirror — populates graph_nodes/graph_edges
+        # for the find_callers / find_related / get_community / find_rationale
+        # MCP tools. No-op when graphify-out/graph.json is absent. Only
+        # reload when the file mtime is newer than our last load.
+        self._refresh_graphify_mirror()
         return stats
+
+    def _refresh_graphify_mirror(self) -> None:
+        """Reload the graphify mirror tables if the on-disk graph is newer."""
+        # Local import — keeps the loader module optional. If graphify
+        # tables don't exist (older schema, custom storage adapter) just
+        # skip silently.
+        try:
+            from ..ingest.graphify_loader import GraphifyLoader
+        except ImportError:  # pragma: no cover — defensive
+            return
+        for repo_path in self._repos:
+            try:
+                loader = GraphifyLoader(self._storage, repo_path)  # type: ignore[arg-type]
+            except Exception as exc:  # pragma: no cover — defensive
+                log.warning("graphify_loader.init_failed", error=str(exc))
+                continue
+            if not loader.exists():
+                continue
+            if not loader.is_stale():
+                log.debug(
+                    "graphify_loader.fresh",
+                    path=str(loader.graph_path),
+                )
+                continue
+            try:
+                loader.load()
+            except Exception as exc:
+                log.warning(
+                    "graphify_loader.load_failed",
+                    path=str(loader.graph_path),
+                    error=str(exc),
+                )
 
     # --------------------------------------------------------------- internals
     def _index_one_repo(self, repo_path: Path) -> RepoStats:
