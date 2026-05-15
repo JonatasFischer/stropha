@@ -257,3 +257,112 @@ def test_resolve_hooks_dir_rejects_unsafe_path(tmp_path: Path) -> None:
     # only assert the fallback was chosen when the path was outside HOME.
     if not str(bad).startswith(str(Path.home().resolve())):
         assert p == (repo / ".git" / "hooks").resolve()
+
+
+# --------------------------------------------------------------------------- v=3 cross-repo baked defaults
+
+
+def test_install_without_new_args_uses_legacy_toplevel(repo: Path) -> None:
+    """Back-compat regression guard: install() with no new flags must emit
+    empty bakes and let runtime fall back to $TOPLEVEL."""
+    install(repo)
+    body = _read_hook(repo)
+    assert 'PROJECT_DIR_DEFAULT=""' in body
+    assert 'INDEX_PATH_DEFAULT=""' in body
+    assert 'LOG_DEFAULT=""' in body
+    # Runtime fallback chain must point at $TOPLEVEL when default is empty.
+    assert 'PROJECT_DIR="${STROPHA_HOOK_PROJECT_DIR:-${PROJECT_DIR_DEFAULT:-$TOPLEVEL}}"' in body
+    # And the CMD still uses $PROJECT_DIR for --directory (NOT hardcoded $TOPLEVEL).
+    assert "--directory $PROJECT_DIR" in body
+    # No env injection for the index step when no override is baked.
+    assert 'INDEX_ENV=""' in body
+
+
+def test_install_with_project_dir_bakes_it(repo: Path, tmp_path: Path) -> None:
+    venv_dir = tmp_path / "venv-host"
+    venv_dir.mkdir()
+    # Make pyproject.toml present so the bake is realistic
+    (venv_dir / "pyproject.toml").write_text("[project]\nname = 'host'", encoding="utf-8")
+
+    result = install(repo, project_dir=venv_dir)
+    body = _read_hook(repo)
+    assert f'PROJECT_DIR_DEFAULT="{venv_dir.resolve()}"' in body
+    # The CMD line still references $PROJECT_DIR (not the literal path) —
+    # the bake flows through the env-resolution chain.
+    assert "--directory $PROJECT_DIR" in body
+    # install() returns the resolved path
+    assert result["project_dir"] == str(venv_dir.resolve())
+
+
+def test_install_with_index_path_bakes_env_injection(repo: Path, tmp_path: Path) -> None:
+    idx = tmp_path / "elsewhere" / "index.db"
+
+    result = install(repo, index_path=idx)
+    body = _read_hook(repo)
+    assert f'INDEX_PATH_DEFAULT="{idx.expanduser()}"' in body
+    # The env injection block must appear and use the override path.
+    assert 'INDEX_ENV="env STROPHA_TARGET_REPO=$TOPLEVEL STROPHA_INDEX_PATH=$INDEX_PATH_OVERRIDE"' in body
+    assert result["index_path"] == str(idx.expanduser())
+
+
+def test_install_with_log_path_bakes_it(repo: Path, tmp_path: Path) -> None:
+    log = tmp_path / "logs" / "hook.log"
+
+    result = install(repo, log_path=log)
+    body = _read_hook(repo)
+    assert f'LOG_DEFAULT="{log.expanduser()}"' in body
+    # The LOG runtime resolution must consume LOG_DEFAULT.
+    assert 'LOG="${STROPHA_HOOK_LOG:-${LOG_DEFAULT:-${HOME}/.cache/stropha-hook.log}}"' in body
+    assert result["log_path"] == str(log.expanduser())
+
+
+def test_status_reports_baked_defaults(repo: Path, tmp_path: Path) -> None:
+    project = tmp_path / "host"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname = 'host'", encoding="utf-8")
+    idx = tmp_path / "i.db"
+    logp = tmp_path / "h.log"
+
+    install(repo, project_dir=project, index_path=idx, log_path=logp)
+    s = status(repo)
+    assert s.installed is True
+    assert s.version == 3
+    assert s.project_dir == project.resolve()
+    assert s.index_path == idx.expanduser()
+    assert s.log_path_default == logp.expanduser()
+    # Dict serialisation also surfaces them.
+    d = s.as_dict()
+    assert d["project_dir"] == str(project.resolve())
+    assert d["index_path"] == str(idx.expanduser())
+    assert d["log_path_default"] == str(logp.expanduser())
+
+
+def test_install_replaces_v2_block_with_v3(repo: Path) -> None:
+    """Upgrade path: a manually-written v=2 block must be cleanly rewritten
+    to v=3 in place (no duplication, no leftover v=2 markers)."""
+    hook_path = repo / ".git" / "hooks" / "post-commit"
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    # Synthetic v=2 block — content doesn't matter, just the markers.
+    hook_path.write_text(
+        "#!/bin/sh\n"
+        "# user prelude\n"
+        f"{START_MARKER} v=2\n"
+        "echo legacy v=2 body\n"
+        f"{END_MARKER}\n"
+        "echo user epilog\n",
+        encoding="utf-8",
+    )
+
+    result = install(repo)
+    assert result["action"] == "updated"
+
+    body = _read_hook(repo)
+    # The new block reports v=3 …
+    assert f"{START_MARKER} v=3" in body
+    # … the old v=2 marker is gone …
+    assert f"{START_MARKER} v=2" not in body
+    # … and the surrounding user content is preserved.
+    assert "# user prelude" in body
+    assert "echo user epilog" in body
+    # Block must appear exactly once.
+    assert body.count(START_MARKER) == 1

@@ -567,13 +567,53 @@ def hook_install_cmd(
         False, "--force",
         help="Silence the warning when a graphify-hook coexists.",
     ),
+    project_dir: Path = typer.Option(
+        None, "--project-dir",
+        help=(
+            "Where stropha is installed (the directory with the `uv` venv). "
+            "Bake into the hook so cross-repo installs work without manual "
+            "env vars. Defaults to --target (dogfooding case)."
+        ),
+    ),
+    index_path: Path = typer.Option(
+        None, "--index-path",
+        help=(
+            "Bake STROPHA_INDEX_PATH into the hook so the index step doesn't "
+            "inherit from --project-dir/.env. Recommended when --project-dir "
+            "differs from --target."
+        ),
+    ),
+    log_path: Path = typer.Option(
+        None, "--log-path",
+        help=(
+            "Bake the hook log file path. Useful for separating per-repo "
+            "refresh trails. Defaults to ~/.cache/stropha-hook.log."
+        ),
+    ),
 ) -> None:
     """Install or refresh the post-commit hook for the target repo."""
     from .tools.hook_install import install
 
     repo = _resolve_hook_target(target)
+
+    # Light validation: warn (don't block) when --project-dir lacks the
+    # usual project marker. Keeps the hook flexible while flagging obvious
+    # typos.
+    if project_dir is not None:
+        resolved_project = project_dir.expanduser().resolve()
+        if not (resolved_project / "pyproject.toml").is_file():
+            console.print(
+                f"[yellow]⚠ --project-dir {resolved_project} has no "
+                f"pyproject.toml — `uv run` may fail at commit time.[/yellow]"
+            )
+
     try:
-        result = install(repo, force=force)
+        result = install(
+            repo, force=force,
+            project_dir=project_dir,
+            index_path=index_path,
+            log_path=log_path,
+        )
     except (ValueError, OSError) as exc:
         console.print(f"[red]Install failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -583,6 +623,18 @@ def hook_install_cmd(
         f"{marker} Hook {result['action']}: [cyan]{result['hook_path']}[/cyan]"
         f"  (v={result['version']})"
     )
+    # Surface baked defaults so the user knows what got injected.
+    baked_lines: list[str] = []
+    if result.get("project_dir"):
+        baked_lines.append(f"  • project_dir: [cyan]{result['project_dir']}[/cyan]")
+    if result.get("index_path"):
+        baked_lines.append(f"  • index_path:  [cyan]{result['index_path']}[/cyan]")
+    if log_path is not None:
+        baked_lines.append(f"  • log_path:    [cyan]{result['log_path']}[/cyan]")
+    if baked_lines:
+        console.print("Baked defaults:")
+        for ln in baked_lines:
+            console.print(ln)
     if result["coexist_warning"]:
         console.print(
             "[yellow]⚠ A `graphify hook` block was detected in the same file.[/yellow]\n"
@@ -643,10 +695,19 @@ def hook_status_cmd(
     else:
         table.add_row("Installed", "no")
     table.add_row("Graphify cohabit", "yes" if s.graphify_cohabit else "no")
-    table.add_row("Log file", str(s.log_path))
-    if s.log_path.is_file():
+    # v=3 baked defaults — show only the ones actually populated.
+    if s.project_dir:
+        table.add_row("Baked project_dir", str(s.project_dir))
+    if s.index_path:
+        table.add_row("Baked index_path", str(s.index_path))
+    if s.log_path_default:
+        table.add_row("Baked log_path", str(s.log_path_default))
+    # Effective log path: baked default wins, else legacy fallback.
+    effective_log = s.log_path_default or s.log_path
+    table.add_row("Log file", str(effective_log))
+    if effective_log.is_file():
         try:
-            size = s.log_path.stat().st_size
+            size = effective_log.stat().st_size
             table.add_row("Log size", f"{size} bytes")
         except OSError:
             pass

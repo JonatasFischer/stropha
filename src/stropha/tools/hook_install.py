@@ -36,7 +36,13 @@ log = get_logger(__name__)
 # Bump this when the embedded script changes in a backwards-incompatible way
 # (e.g. added env var, renamed binary). `install --force` and `status` use it
 # to detect outdated blocks.
-HOOK_VERSION = 2
+#
+# v=2: graphify update + stropha index in a single nohup block.
+# v=3: cross-repo support. Bakes PROJECT_DIR / INDEX_PATH / LOG defaults at
+#      install time so `--target /repo --project-dir /elsewhere` no longer
+#      requires the user to set env vars on every commit. The legacy
+#      single-repo path is preserved when no flags are passed (empty bakes).
+HOOK_VERSION = 3
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -50,6 +56,13 @@ _BLOCK_RE = re.compile(
 )
 _VERSION_RE = re.compile(rf"{re.escape(START_MARKER)} v=(\d+)")
 
+# Baked-default extractors (v=3). Empty string means "no bake — use legacy
+# auto-resolution". We tolerate either ASCII " or fancier quotes that some
+# editors might inject during manual fixes.
+_PROJECT_DIR_RE = re.compile(r'PROJECT_DIR_DEFAULT="([^"]*)"')
+_INDEX_PATH_RE = re.compile(r'INDEX_PATH_DEFAULT="([^"]*)"')
+_LOG_DEFAULT_RE = re.compile(r'LOG_DEFAULT="([^"]*)"')
+
 
 # --------------------------------------------------------------------- model
 
@@ -62,6 +75,11 @@ class HookStatus:
     version: int | None
     graphify_cohabit: bool
     log_path: Path
+    # v=3 baked defaults parsed from the hook file. None when absent or
+    # when an older hook version (≤2) lacks the bake.
+    project_dir: Path | None = None
+    index_path: Path | None = None
+    log_path_default: Path | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -71,6 +89,11 @@ class HookStatus:
             "version": self.version,
             "graphify_cohabit": self.graphify_cohabit,
             "log_path": str(self.log_path),
+            "project_dir": str(self.project_dir) if self.project_dir else None,
+            "index_path": str(self.index_path) if self.index_path else None,
+            "log_path_default": (
+                str(self.log_path_default) if self.log_path_default else None
+            ),
         }
 
 
@@ -142,14 +165,29 @@ def _detect_uv_path() -> str:
 # --------------------------------------------------------------------- script template
 
 
-def _render_hook_block(target: Path) -> str:
+def _render_hook_block(
+    target: Path,
+    *,
+    project_dir: Path | None = None,
+    index_path: Path | None = None,
+    log_path: Path | None = None,
+) -> str:
     """The script body sandwiched between START and END markers.
 
     Same logic as RFC §6.1 + the manual install: graphify update FIRST
     (no LLM, fast), then stropha index — both inside one detached background
     nohup process protected by flock.
+
+    v=3 additions: bake ``project_dir`` / ``index_path`` / ``log_path``
+    defaults into the generated script so cross-repo installs (target ≠
+    where stropha lives) work without commit-time env vars. Each baked
+    value is honoured unless overridden by the matching
+    ``STROPHA_HOOK_*`` env var.
     """
     target_str = str(target)
+    project_dir_default = str(project_dir.resolve()) if project_dir else ""
+    index_path_default = str(index_path.expanduser()) if index_path else ""
+    log_default = str(log_path.expanduser()) if log_path else ""
     # Use single-quoted heredoc semantics: every $ in the template is a literal
     # for the generated shell file (no Python interpolation).
     return dedent(
@@ -160,13 +198,28 @@ def _render_hook_block(target: Path) -> str:
         # graphify update runs BEFORE stropha index so the index can pick up
         # the fresh graph.json on the same commit.
         #
-        # Overrides:
+        # Overrides (env vars beat the baked defaults below):
         #   STROPHA_HOOK_SKIP=1         -> skip entirely (rebases)
         #   STROPHA_HOOK_TIMEOUT=600    -> wall-clock seconds for bg job
         #   STROPHA_HOOK_LOG=<path>     -> override log file
         #   STROPHA_HOOK_UV=<path>      -> override `uv` binary
         #   STROPHA_HOOK_GRAPHIFY=<p>   -> override `graphify` binary
         #   STROPHA_HOOK_NO_GRAPHIFY=1  -> skip graphify update step
+        #   STROPHA_HOOK_PROJECT_DIR=<p> -> `uv run --directory` target (where
+        #                                  stropha is installed). Defaults to
+        #                                  the baked PROJECT_DIR_DEFAULT, else
+        #                                  $TOPLEVEL (legacy dogfooding case).
+        #   STROPHA_HOOK_INDEX_PATH=<p>  -> override STROPHA_INDEX_PATH for the
+        #                                  index step. Defaults to the baked
+        #                                  INDEX_PATH_DEFAULT, else honours
+        #                                  .env in PROJECT_DIR / Config defaults.
+
+        # Defaults baked at install time. Re-run `stropha hook install` with
+        # the appropriate flags to change. Empty string = no default, fall
+        # back to legacy auto-resolution.
+        PROJECT_DIR_DEFAULT="{project_dir_default}"
+        INDEX_PATH_DEFAULT="{index_path_default}"
+        LOG_DEFAULT="{log_default}"
 
         # --- 1. Skip conditions ----------------------------------------------
         [ "${{STROPHA_HOOK_SKIP:-0}}" = "1" ] && exit 0
@@ -218,7 +271,11 @@ def _render_hook_block(target: Path) -> str:
         fi
 
         # --- 4. Detached background run --------------------------------------
-        LOG="${{STROPHA_HOOK_LOG:-${{HOME}}/.cache/stropha-hook.log}}"
+        # Honour commit-time env > install-time baked default > legacy $TOPLEVEL.
+        PROJECT_DIR="${{STROPHA_HOOK_PROJECT_DIR:-${{PROJECT_DIR_DEFAULT:-$TOPLEVEL}}}}"
+        INDEX_PATH_OVERRIDE="${{STROPHA_HOOK_INDEX_PATH:-$INDEX_PATH_DEFAULT}}"
+
+        LOG="${{STROPHA_HOOK_LOG:-${{LOG_DEFAULT:-${{HOME}}/.cache/stropha-hook.log}}}}"
         LOCK="/tmp/stropha-hook-$(printf '%s' "$TOPLEVEL" | md5).lock"
         mkdir -p "$(dirname "$LOG")"
 
@@ -230,10 +287,19 @@ def _render_hook_block(target: Path) -> str:
             exit 0
         fi
 
+        # Inject STROPHA_TARGET_REPO + STROPHA_INDEX_PATH into the index step
+        # only when the user opted in via --index-path / STROPHA_HOOK_INDEX_PATH.
+        # Empty INDEX_ENV preserves the legacy behaviour (honours .env / Config
+        # defaults from PROJECT_DIR).
+        INDEX_ENV=""
+        if [ -n "$INDEX_PATH_OVERRIDE" ]; then
+            INDEX_ENV="env STROPHA_TARGET_REPO=$TOPLEVEL STROPHA_INDEX_PATH=$INDEX_PATH_OVERRIDE"
+        fi
+
         if [ -n "$TIMEOUT_BIN" ]; then
-            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $UV run --directory $TOPLEVEL stropha index --repo $TOPLEVEL"
+            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
         else
-            CMD="$UV run --directory $TOPLEVEL stropha index --repo $TOPLEVEL"
+            CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
         fi
 
         nohup sh -c "
@@ -283,6 +349,9 @@ def install(
     target: Path,
     *,
     force: bool = False,
+    project_dir: Path | None = None,
+    index_path: Path | None = None,
+    log_path: Path | None = None,
 ) -> dict:
     """Install or update the post-commit hook for ``target`` repo.
 
@@ -292,6 +361,14 @@ def install(
       - File exists, our markers → replace block in-place
       - File exists, graphify markers → warn (or proceed silently when ``force``)
 
+    Cross-repo installs (v=3): pass ``project_dir`` to point ``uv run
+    --directory`` at the directory where ``stropha`` is actually installed
+    (not the ``target`` repo). Pass ``index_path`` to bake a stable
+    ``STROPHA_INDEX_PATH`` for the index step. Pass ``log_path`` to send
+    refresh logs somewhere other than the default
+    ``~/.cache/stropha-hook.log`` — handy when you maintain hooks for
+    several repos and want per-repo trails.
+
     Returns a structured outcome dict suitable for CLI rendering or logging.
     """
     target = target.resolve()
@@ -299,7 +376,12 @@ def install(
         raise ValueError(f"{target} is not a git repository (no .git/)")
 
     hook = _hook_path(target)
-    block = _render_hook_block(target)
+    block = _render_hook_block(
+        target,
+        project_dir=project_dir,
+        index_path=index_path,
+        log_path=log_path,
+    )
     existing = hook.read_text(encoding="utf-8") if hook.is_file() else ""
 
     has_graphify = GRAPHIFY_MARKER in existing
@@ -310,7 +392,7 @@ def install(
         body = "#!/bin/sh\n" + block
         action = "created"
     elif _BLOCK_RE.search(existing):
-        # Replace our block in-place
+        # Replace our block in-place — handles v=2 → v=3 upgrade.
         body = _BLOCK_RE.sub(block, existing, count=1)
         action = "updated"
     else:
@@ -320,8 +402,13 @@ def install(
         action = "appended"
 
     _atomic_write(hook, body, executable=True)
-    log.info("hook.install", target=str(target), hook=str(hook), action=action,
-             version=HOOK_VERSION, graphify_cohabit=has_graphify)
+    log.info(
+        "hook.install", target=str(target), hook=str(hook), action=action,
+        version=HOOK_VERSION, graphify_cohabit=has_graphify,
+        project_dir=str(project_dir.resolve()) if project_dir else None,
+        index_path=str(index_path.expanduser()) if index_path else None,
+        log_path_baked=str(log_path.expanduser()) if log_path else None,
+    )
 
     return {
         "action": action,
@@ -329,7 +416,9 @@ def install(
         "version": HOOK_VERSION,
         "coexist_warning": coexist_warning,
         "graphify_cohabit": has_graphify,
-        "log_path": str(_log_path()),
+        "log_path": str(log_path.expanduser()) if log_path else str(_log_path()),
+        "project_dir": str(project_dir.resolve()) if project_dir else None,
+        "index_path": str(index_path.expanduser()) if index_path else None,
     }
 
 
@@ -366,7 +455,13 @@ def uninstall(target: Path) -> dict:
 
 
 def status(target: Path) -> HookStatus:
-    """Inspect whether the hook is installed for ``target``."""
+    """Inspect whether the hook is installed for ``target``.
+
+    For v=3 hooks the baked defaults (``PROJECT_DIR_DEFAULT`` /
+    ``INDEX_PATH_DEFAULT`` / ``LOG_DEFAULT``) are parsed out of the script
+    body so the CLI can render them. Older hooks return ``None`` for
+    those fields.
+    """
     target = target.resolve()
     hook = _hook_path(target)
     if not hook.is_file():
@@ -377,10 +472,21 @@ def status(target: Path) -> HookStatus:
     existing = hook.read_text(encoding="utf-8")
     m = _VERSION_RE.search(existing)
     version = int(m.group(1)) if m else None
+
+    def _parse_baked(rx: re.Pattern[str]) -> Path | None:
+        m = rx.search(existing)
+        if m is None:
+            return None
+        value = m.group(1).strip()
+        return Path(value) if value else None
+
     return HookStatus(
         target_repo=target, hook_path=hook,
         installed=version is not None,
         version=version,
         graphify_cohabit=GRAPHIFY_MARKER in existing,
         log_path=_log_path(),
+        project_dir=_parse_baked(_PROJECT_DIR_RE),
+        index_path=_parse_baked(_INDEX_PATH_RE),
+        log_path_default=_parse_baked(_LOG_DEFAULT_RE),
     )

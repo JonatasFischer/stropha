@@ -93,7 +93,7 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 - **NÃO**: Suporte a `pre-commit` síncrono. Justificativa em §17 (ADR-003).
 - **NÃO**: Auto-bootstrap (rodar `graphify .` automaticamente quando `graphify-out/` não existe). Usuário precisa fazer o bootstrap explicitamente — graphify sem flag custa tokens LLM.
 - **NÃO**: Re-indexação automática de mudanças em `graphify-out/` (file watcher). Hook post-commit cobre o cenário pretendido.
-- **NÃO**: Suporte multi-repo no `hook install` v1. Um `--target` por instalação. Multi-repo via instalações repetidas.
+- ~~**NÃO**: Suporte multi-repo no `hook install` v1. Um `--target` por instalação. Multi-repo via instalações repetidas.~~ **Substituído na v=3**: `stropha hook install --target <repo> --project-dir <where-stropha-lives> --index-path <per-repo-db> --log-path <per-repo-log>` cobre cross-repo limpamente. Múltiplas instalações continuam suportadas (cada hook é independente), mas agora cada uma pode apontar para um project_dir distinto onde o `uv` está hospedado.
 - **NÃO**: Empacotar graphify como dependência transitiva. Usuário instala via `pipx install graphifyy` separadamente; nosso CLI apenas detecta e usa.
 
 ### 2.4 Critérios de sucesso
@@ -785,6 +785,9 @@ Visível no terminal apenas na primeira vez (post-commit imprime no log, mas o s
 
 ```
 stropha hook install   [--target <repo>] [--force]
+                       [--project-dir <where-stropha-lives>]
+                       [--index-path <per-repo-db>]
+                       [--log-path <per-repo-log>]
 stropha hook uninstall [--target <repo>]
 stropha hook status    [--target <repo>]
 ```
@@ -796,6 +799,10 @@ stropha hook status    [--target <repo>]
 - Garante `chmod +x` no script final
 - Imprime instruções de teste: `git commit --allow-empty -m "test hook" && tail -f ~/.cache/stropha-hook.log`
 - `--force`: silencia o prompt de confirmação quando graphify-hook existir
+- `--project-dir`: caminho onde o `uv` venv com `stropha` instalado vive. Bakado no script — sem isso, o `uv run --directory $TOPLEVEL stropha index` quebra com `Failed to spawn: stropha` quando `target ≠ project_dir`. Default = `target` (dogfooding).
+- `--index-path`: bake `STROPHA_INDEX_PATH=...` no `env` que precede o `stropha index`. Recomendado quando `--project-dir != --target` para evitar herança acidental do `.env` do project_dir.
+- `--log-path`: bake o caminho do log. Útil para trilhas separadas por repo (`~/.cache/stropha-hook-foo.log`, `~/.cache/stropha-hook-bar.log`).
+- Light validation: emite warning amarelo (não bloqueia) se `--project-dir` aponta para diretório sem `pyproject.toml` — costuma ser typo.
 
 **`uninstall`**:
 - Remove APENAS o bloco entre nossos markers; deixa o resto intacto
@@ -1275,6 +1282,25 @@ sqlite3 ~/.stropha/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
 **Contexto**: alguém pode querer indexar múltiplos repos.
 **Decisão**: `hook install --target <repo>` aceita um repo só. Multi-repo via instalações repetidas.
 **Razão**: KISS para v1; multi-target adiciona complexidade de validação e composição com hooks pré-existentes em cada repo. Pode entrar na v2 sem breaking change.
+
+**Atualização v=3 (ADR-007a)**: cross-repo agora funciona limpo via
+`--project-dir <stropha-install> --index-path <target-db> --log-path <per-repo-log>`.
+Cada flag bakeia um default no script gerado. Decisão: **bakar no script
+> depender de env vars commit-time**. Razão: hooks rodam num contexto
+shell minimalista (PATH stripado, sem dotfiles do usuário) — depender de
+`STROPHA_HOOK_*` env vars exigiria que o usuário exportasse-as no shell
+de cada commit ou em `~/.zshenv`, ambos frágeis. Bakar no script no
+momento do install:
+1. **Determinístico** — o que você instalou é o que vai rodar
+2. **Auditável** — `stropha hook status` mostra exatamente os defaults
+3. **Override ainda existe** — env vars (`STROPHA_HOOK_PROJECT_DIR`,
+   `STROPHA_HOOK_INDEX_PATH`, `STROPHA_HOOK_LOG`) ainda batem o bake,
+   para experimentos pontuais
+
+Múltiplas instalações continuam suportadas (cada hook é independente),
+mas agora cada uma pode apontar para um `project_dir` distinto onde o
+`uv` venv com `stropha` vive — caso típico: você mantém `stropha` em
+`~/sources/rag` e quer indexar `~/sources/mimoria`.
 
 ### ADR-008 — Recalibração de níveis de indexação (cost-aware)
 

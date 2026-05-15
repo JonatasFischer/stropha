@@ -493,6 +493,8 @@ pipeline:
 | `STROPHA_GRAPHIFY_OUT` | Override path to `graphify-out/` |
 | `STROPHA_HOOK_SKIP=1` | Skip the post-commit hook (useful during rebases) |
 | `STROPHA_HOOK_TIMEOUT=600` | Hook background process wall-clock timeout |
+| `STROPHA_HOOK_PROJECT_DIR` | Where stropha is installed (the directory with the `uv` venv). Defaults to baked-in value, else `$TOPLEVEL`. |
+| `STROPHA_HOOK_INDEX_PATH` | Override `STROPHA_INDEX_PATH` for the hook's index step. Defaults to baked-in value. |
 | `STROPHA_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` |
 
 ## Post-commit automation
@@ -536,6 +538,29 @@ stropha hook uninstall                # cleanly remove
 
 The hook coexists with `husky` / `lefthook` (it honours `core.hooksPath`)
 and with the `graphify hook` (warns and respects `--force`).
+
+### Cross-repo installs (v=3)
+
+Indexing **another repo** with this stropha install requires telling the
+hook where stropha actually lives (so `uv run` finds it). All three paths
+get baked into the hook at install time — no commit-time env vars
+needed:
+
+```bash
+# Index Mimoria from this stropha checkout, each repo with its own log:
+stropha hook install \
+    --target /Users/jonatas/sources/mimoria \
+    --project-dir /Users/jonatas/sources/rag \
+    --index-path /Users/jonatas/sources/mimoria/.stropha/index.db \
+    --log-path ~/.cache/stropha-hook-mimoria.log
+
+# Confirm the bakes
+stropha hook status --target /Users/jonatas/sources/mimoria
+```
+
+Same flags exist as env-var overrides (`STROPHA_HOOK_PROJECT_DIR`,
+`STROPHA_HOOK_INDEX_PATH`, `STROPHA_HOOK_LOG`) for one-off experiments
+without rewriting the hook.
 
 ## Evaluation
 
