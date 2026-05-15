@@ -68,7 +68,15 @@ def _resolve_confidence_filter(env_value: str | None) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class LoadResult:
-    """Outcome of a :meth:`GraphifyLoader.load` invocation."""
+    """Outcome of a :meth:`GraphifyLoader.load` invocation.
+
+    Phase C diff-load reports the granular ``nodes_added`` /
+    ``nodes_deleted`` / ``edges_added`` / ``edges_deleted`` counts so
+    the cost dashboard can show how much actually changed run-over-run.
+    The legacy ``nodes_loaded`` / ``edges_loaded`` totals reflect the
+    full incoming payload size (every node in graph.json — same
+    meaning as before).
+    """
 
     nodes_loaded: int
     edges_loaded: int
@@ -77,6 +85,11 @@ class LoadResult:
     duration_ms: int
     graph_path: str
     confidence_filter: tuple[str, ...]
+    # Diff-load granular counts (Phase C). 0 on first load.
+    nodes_added: int = 0
+    nodes_deleted: int = 0
+    edges_added: int = 0
+    edges_deleted: int = 0
 
     def as_log_kwargs(self) -> dict[str, object]:
         return {
@@ -87,6 +100,10 @@ class LoadResult:
             "duration_ms": self.duration_ms,
             "graph_path": self.graph_path,
             "confidence_filter": list(self.confidence_filter),
+            "nodes_added": self.nodes_added,
+            "nodes_deleted": self.nodes_deleted,
+            "edges_added": self.edges_added,
+            "edges_deleted": self.edges_deleted,
         }
 
 
@@ -206,58 +223,122 @@ class GraphifyLoader:
                 node_to_community[str(nid)] = cid
 
         cur = self._storage._conn.cursor()
-        # Wrap the whole thing in a transaction. SQLite already buffers writes
-        # in memory but BEGIN ensures atomic visibility.
+        # Phase C diff-load: compute incoming vs existing IDs, then issue
+        # targeted INSERT OR REPLACE / DELETE statements instead of a
+        # global DELETE + INSERT. On no-op runs this is a no-write
+        # operation; on partial updates only the touched rows move.
         cur.execute("BEGIN IMMEDIATE")
         try:
-            cur.execute("DELETE FROM graph_edges")
-            cur.execute("DELETE FROM graph_nodes")
-            cur.execute("DELETE FROM graph_meta")
+            # ---- nodes diff ---------------------------------------------
+            incoming_node_rows = [
+                (
+                    str(n["id"]),
+                    str(n.get("label") or n["id"]),
+                    n.get("file_type"),
+                    n.get("source_file"),
+                    n.get("source_location"),
+                    node_to_community.get(str(n["id"])),
+                    community_labels.get(
+                        str(node_to_community.get(str(n["id"]))), None
+                    ) if node_to_community.get(str(n["id"])) is not None else None,
+                )
+                for n in nodes
+                if "id" in n
+            ]
+            incoming_node_ids = {r[0] for r in incoming_node_rows}
+            existing_node_ids = {
+                row[0] for row in cur.execute(
+                    "SELECT node_id FROM graph_nodes"
+                ).fetchall()
+            }
+            nodes_to_delete = existing_node_ids - incoming_node_ids
+            if nodes_to_delete:
+                cur.executemany(
+                    "DELETE FROM graph_nodes WHERE node_id = ?",
+                    [(nid,) for nid in nodes_to_delete],
+                )
 
-            cur.executemany(
-                """INSERT OR REPLACE INTO graph_nodes
-                   (node_id, label, file_type, source_file, source_location,
-                    community_id, community_label)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        str(n["id"]),
-                        str(n.get("label") or n["id"]),
-                        n.get("file_type"),
-                        n.get("source_file"),
-                        n.get("source_location"),
-                        node_to_community.get(str(n["id"])),
-                        community_labels.get(
-                            str(node_to_community.get(str(n["id"]))), None
-                        ) if node_to_community.get(str(n["id"])) is not None else None,
-                    )
-                    for n in nodes
-                    if "id" in n
-                ],
-            )
+            # INSERT OR REPLACE is idempotent: same row stays same. The
+            # "added" count we report includes both genuinely new and
+            # row-content-changed nodes (we don't deep-compare).
+            if incoming_node_rows:
+                cur.executemany(
+                    """INSERT OR REPLACE INTO graph_nodes
+                       (node_id, label, file_type, source_file, source_location,
+                        community_id, community_label)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    incoming_node_rows,
+                )
+            nodes_added = len(incoming_node_ids - existing_node_ids)
 
+            # ---- edges diff ---------------------------------------------
+            # SQLite-PRIMARY-KEY caveat: NULLs in a PRIMARY KEY column are
+            # treated as distinct, so `INSERT OR REPLACE` cannot dedupe
+            # rows whose source_file / source_location are NULL. We
+            # coerce missing values to "" both on insert and on the
+            # uniqueness key so the diff-load remains idempotent for
+            # INFERRED edges (which often lack a precise source location).
             edges_loaded = 0
             edges_filtered = 0
             edge_rows: list[tuple] = []
+            edge_keys: set[tuple] = set()
             for e in raw_edges:
                 conf = (e.get("confidence") or "").upper()
                 if conf not in self._confidence:
                     edges_filtered += 1
                     continue
-                edge_rows.append(
-                    (
-                        str(e["source"]),
-                        str(e["target"]),
-                        str(e.get("relation") or ""),
-                        conf,
-                        e.get("confidence_score"),
-                        e.get("context"),
-                        e.get("source_file"),
-                        e.get("source_location"),
-                        e.get("weight"),
-                    )
+                source_file_norm = e.get("source_file") or ""
+                source_location_norm = e.get("source_location") or ""
+                row = (
+                    str(e["source"]),
+                    str(e["target"]),
+                    str(e.get("relation") or ""),
+                    conf,
+                    e.get("confidence_score"),
+                    e.get("context"),
+                    source_file_norm,
+                    source_location_norm,
+                    e.get("weight"),
                 )
+                edge_rows.append(row)
+                # Primary key matches schema v4: (source, target, relation,
+                # source_file, source_location). Use the normalised values
+                # so the set comparison is symmetric with what's stored.
+                edge_keys.add((row[0], row[1], row[2], row[6], row[7]))
                 edges_loaded += 1
+
+            existing_edge_keys = {
+                # Coerce NULL → "" on the existing side too, so legacy
+                # rows from pre-Phase-C loads (which may have stored
+                # actual NULL) compare correctly with the new
+                # normalised incoming rows.
+                (r[0], r[1], r[2], r[3] or "", r[4] or "")
+                for r in cur.execute(
+                    """SELECT source, target, relation, source_file, source_location
+                       FROM graph_edges"""
+                ).fetchall()
+            }
+            edges_to_delete = existing_edge_keys - edge_keys
+            if edges_to_delete:
+                cur.executemany(
+                    """DELETE FROM graph_edges
+                       WHERE source = ? AND target = ? AND relation = ?
+                         AND COALESCE(source_file, '') = ?
+                         AND COALESCE(source_location, '') = ?""",
+                    list(edges_to_delete),
+                )
+
+            # First normalise any legacy NULL rows so subsequent INSERT
+            # OR REPLACE can dedupe against them. This is a one-shot
+            # cleanup; new inserts always use "" so it's a no-op after
+            # the first Phase-C-aware run.
+            cur.execute(
+                """UPDATE graph_edges
+                   SET source_file = COALESCE(source_file, ''),
+                       source_location = COALESCE(source_location, '')
+                   WHERE source_file IS NULL OR source_location IS NULL"""
+            )
+
             if edge_rows:
                 cur.executemany(
                     """INSERT OR REPLACE INTO graph_edges
@@ -266,7 +347,9 @@ class GraphifyLoader:
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     edge_rows,
                 )
+            edges_added = len(edge_keys - existing_edge_keys)
 
+            # ---- meta (regenerate; 4 rows, no point diffing) ------------
             now_iso = datetime.now(UTC).isoformat()
             file_mtime = self._graph_path.stat().st_mtime
             for k, v in (
@@ -295,6 +378,10 @@ class GraphifyLoader:
             duration_ms=duration_ms,
             graph_path=str(self._graph_path),
             confidence_filter=self._confidence,
+            nodes_added=nodes_added,
+            nodes_deleted=len(nodes_to_delete),
+            edges_added=edges_added,
+            edges_deleted=len(edges_to_delete),
         )
         log.info("graphify_loader.done", **result.as_log_kwargs())
         return result

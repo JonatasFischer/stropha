@@ -448,6 +448,100 @@ def test_incremental_renames_chunks_without_re_embed(tmp_path: Path) -> None:
         assert "old_name.py" not in paths
 
 
+# --------------------------------------------------------------------------- Phase C — rename-resilient chunk_id
+
+
+def test_rename_chunks_recomputes_chunk_id(storage: Storage, repo_id: int) -> None:
+    """After `rename_chunks`, the chunk row's chunk_id reflects the new
+    rel_path (computed via `make_chunk_id`). This is what makes
+    `chunk_is_fresh` find the renamed chunks under the new path."""
+    from stropha.ingest.chunkers.base import make_chunk_id
+
+    chunk = Chunk(
+        chunk_id="placeholder",  # we'll compute the real one below
+        rel_path="old.py", language="python",
+        kind="function", symbol="foo", parent_chunk_id=None,
+        start_line=1, end_line=10,
+        content="def foo(): pass", content_hash="hash-foo",
+    )
+    real_old_id = make_chunk_id("old.py", 1, 10, "hash-foo", repo_key="local:test")
+    chunk = chunk.model_copy(update={"chunk_id": real_old_id})
+    storage.upsert_chunk(chunk, [0.0] * 4, "stub", 4, repo_id=repo_id)
+    storage.commit()
+
+    moved = storage.rename_chunks(repo_id, "old.py", "new.py")
+    assert moved == 1
+
+    row = storage._conn.execute(
+        "SELECT chunk_id, rel_path FROM chunks WHERE rel_path = 'new.py'"
+    ).fetchone()
+    assert row is not None
+    expected_new_id = make_chunk_id(
+        "new.py", 1, 10, "hash-foo", repo_key="local:test",
+    )
+    assert row["chunk_id"] == expected_new_id
+    assert row["chunk_id"] != real_old_id
+
+
+def test_rename_chunks_regenerates_fts5_row(storage: Storage, repo_id: int) -> None:
+    """FTS5 path tokens come from the chunk's rel_path. After rename,
+    BM25 queries on the new path must find the chunk."""
+    from stropha.ingest.chunkers.base import make_chunk_id
+
+    chunk = Chunk(
+        chunk_id=make_chunk_id("src/old_thing.py", 1, 5, "h", repo_key="local:test"),
+        rel_path="src/old_thing.py", language="python",
+        kind="function", symbol="thing", parent_chunk_id=None,
+        start_line=1, end_line=5,
+        content="def thing(): pass", content_hash="h",
+    )
+    storage.upsert_chunk(chunk, [0.0] * 4, "stub", 4, repo_id=repo_id)
+    storage.commit()
+
+    # Query for the old path token surfaces it.
+    hits_old = storage.search_bm25("old_thing", k=5)
+    assert any(h.rel_path == "src/old_thing.py" for h in hits_old)
+
+    storage.rename_chunks(repo_id, "src/old_thing.py", "src/new_thing.py")
+    storage.commit()
+
+    # Now the new path token surfaces it.
+    hits_new = storage.search_bm25("new_thing", k=5)
+    assert any(h.rel_path == "src/new_thing.py" for h in hits_new)
+
+
+def test_rename_preserves_chunk_is_fresh(storage: Storage, repo_id: int) -> None:
+    """After rename, the new chunk_id matches what `make_chunk_id` would
+    produce for the new path — so `chunk_is_fresh(new_id, ...)` returns
+    True, which is what saves re-embed cost on the next index run."""
+    from stropha.ingest.chunkers.base import make_chunk_id
+
+    chunk = Chunk(
+        chunk_id=make_chunk_id("a.py", 1, 5, "hc", repo_key="local:test"),
+        rel_path="a.py", language="python",
+        kind="function", symbol=None, parent_chunk_id=None,
+        start_line=1, end_line=5,
+        content="x", content_hash="hc",
+    )
+    storage.upsert_chunk(chunk, [0.0] * 4, "m", 4, repo_id=repo_id)
+    storage.rename_chunks(repo_id, "a.py", "b.py")
+    storage.commit()
+
+    new_id = make_chunk_id("b.py", 1, 5, "hc", repo_key="local:test")
+    assert storage.chunk_is_fresh(new_id, "hc", "m") is True
+
+
+def test_rename_chunks_handles_empty_path(storage: Storage, repo_id: int) -> None:
+    """Renaming a path with no chunks under it is a no-op."""
+    moved = storage.rename_chunks(repo_id, "ghost.py", "ghost_renamed.py")
+    assert moved == 0
+
+
+def test_rename_same_path_is_noop(storage: Storage, repo_id: int) -> None:
+    moved = storage.rename_chunks(repo_id, "x.py", "x.py")
+    assert moved == 0
+
+
 def test_full_flag_overrides_incremental_default(tmp_path: Path) -> None:
     """Even after a checkpoint exists, mode='full' walks everything."""
     repo = tmp_path / "repo"

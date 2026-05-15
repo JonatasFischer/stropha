@@ -339,3 +339,123 @@ def test_storage_stats_graph_field_after_load(tmp_path: Path, storage: Storage) 
     assert g["edges_total"] == 1
     assert g["edges_by_confidence"] == {"EXTRACTED": 1}
     assert g["last_loaded_at"]  # truthy ISO string
+
+
+# --------------------------------------------------------------------------- Phase C — diff-load
+
+
+def test_diff_load_reports_added_on_first_run(tmp_path: Path, storage: Storage) -> None:
+    """Initial load of N nodes reports nodes_added=N, nothing deleted."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[],
+    )
+    res = GraphifyLoader(storage, tmp_path).load()
+    assert res is not None
+    assert res.nodes_added == 2
+    assert res.nodes_deleted == 0
+
+
+def test_diff_load_idempotent_no_writes(tmp_path: Path, storage: Storage) -> None:
+    """Second load with no graph.json change reports zero deltas."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[
+            {"source": "a", "target": "b", "relation": "calls",
+             "confidence": "EXTRACTED", "source_file": "x.py",
+             "source_location": "L1"}
+        ],
+    )
+    loader = GraphifyLoader(storage, tmp_path)
+    loader.load()
+    res2 = loader.load()
+    assert res2 is not None
+    assert res2.nodes_added == 0
+    assert res2.nodes_deleted == 0
+    assert res2.edges_added == 0
+    assert res2.edges_deleted == 0
+
+
+def test_diff_load_deletes_removed_nodes(tmp_path: Path, storage: Storage) -> None:
+    """Nodes present in the previous load but absent from the new one
+    get removed."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[
+            {"id": "a", "label": "A"},
+            {"id": "b", "label": "B"},
+            {"id": "c", "label": "C"},
+        ],
+        edges=[],
+    )
+    loader = GraphifyLoader(storage, tmp_path)
+    loader.load()
+
+    # New version drops "c".
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[],
+    )
+    os.utime(graph_path, (1_000_000_000, 1_000_000_000))
+    res = loader.load()
+    assert res is not None
+    assert res.nodes_deleted == 1
+
+    ids = {r[0] for r in storage._conn.execute(
+        "SELECT node_id FROM graph_nodes"
+    ).fetchall()}
+    assert ids == {"a", "b"}
+
+
+def test_diff_load_adds_only_new_node(tmp_path: Path, storage: Storage) -> None:
+    """Initial load + new load with one extra node reports nodes_added=1."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}],
+        edges=[],
+    )
+    loader = GraphifyLoader(storage, tmp_path)
+    loader.load()
+
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "newcomer", "label": "N"}],
+        edges=[],
+    )
+    os.utime(graph_path, (1_000_000_000, 1_000_000_000))
+    res = loader.load()
+    assert res is not None
+    assert res.nodes_added == 1
+    assert res.nodes_deleted == 0
+
+
+def test_diff_load_edges_with_null_source_file_dedupe(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    """Edges without source_file/source_location MUST still dedupe across
+    repeat loads (PRIMARY-KEY-allows-NULL caveat; we coerce to '')."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[
+            # No source_file / source_location → both NULL on the row.
+            {"source": "a", "target": "b", "relation": "calls",
+             "confidence": "EXTRACTED"},
+        ],
+    )
+    loader = GraphifyLoader(storage, tmp_path)
+    loader.load()
+    loader.load()
+    loader.load()
+    n_edges = storage._conn.execute(
+        "SELECT COUNT(*) FROM graph_edges"
+    ).fetchone()[0]
+    assert n_edges == 1  # not 3

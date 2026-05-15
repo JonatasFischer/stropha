@@ -732,37 +732,91 @@ class Storage:
         self, repo_id: int, old_rel_path: str, new_rel_path: str,
     ) -> int:
         """Move every chunk's ``rel_path`` from ``old_rel_path`` to
-        ``new_rel_path`` for the given repo.
+        ``new_rel_path`` for the given repo, **recomputing chunk_id**
+        and regenerating the FTS5 row so the chunk identity remains
+        stable across renames.
 
-        Used by the Phase B incremental walker when a file was renamed
-        with NO content change (or only minor content change — the
-        chunk-level freshness check still skips re-embed of unchanged
-        chunks). Returns the number of rows touched. The FTS5
-        ``rel_path`` column tracks the change automatically because we
-        regenerate the FTS row downstream — for now the chunks table is
-        the source of truth.
+        Phase C contract: the user-visible win is that subsequent
+        `chunk_is_fresh()` calls find the renamed chunks under the new
+        path, so they are skipped instead of re-embedded. Cost: one
+        hash + one FTS5 DELETE+INSERT per chunk. For typical renames
+        (≤ tens of chunks) this is sub-ms.
+
+        Returns the number of chunk rows touched.
         """
         if old_rel_path == new_rel_path:
             return 0
-        cur = self._conn.execute(
-            """UPDATE chunks SET rel_path = ?
-               WHERE repo_id = ? AND rel_path = ?""",
-            (new_rel_path, repo_id, old_rel_path),
-        )
-        moved = int(cur.rowcount or 0)
-        # Same for files_meta if present.
+
+        # Step 1: identify chunks under the old path and load enough
+        # data to recompute their chunk_id.
+        rows = self._conn.execute(
+            """SELECT c.id, c.chunk_id, c.start_line, c.end_line,
+                      c.content, c.symbol, c.content_hash,
+                      r.normalized_key AS repo_key
+               FROM chunks c
+               LEFT JOIN repos r ON r.id = c.repo_id
+               WHERE c.repo_id = ? AND c.rel_path = ?""",
+            (repo_id, old_rel_path),
+        ).fetchall()
+
+        if not rows:
+            # No chunks for this path — still update file_meta for
+            # consistency with the walker's notion of rename.
+            self._patch_file_meta_rename(repo_id, old_rel_path, new_rel_path)
+            return 0
+
+        # Lazy import to avoid a top-of-module dependency on a sibling
+        # package from storage/.
+        from ..ingest.chunkers.base import make_chunk_id
+
+        cur = self._conn.cursor()
+        moved = 0
+        for row in rows:
+            new_chunk_id = make_chunk_id(
+                new_rel_path,
+                int(row["start_line"]),
+                int(row["end_line"]),
+                row["content_hash"],
+                repo_key=row["repo_key"],
+            )
+            cur.execute(
+                """UPDATE chunks
+                   SET rel_path = ?, chunk_id = ?
+                   WHERE id = ?""",
+                (new_rel_path, new_chunk_id, int(row["id"])),
+            )
+            # Regenerate FTS5 row so path tokens reflect the new path.
+            rowid = int(row["id"])
+            cur.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rowid,))
+            cur.execute(
+                "INSERT INTO fts_chunks(rowid, content, rel_path) VALUES (?, ?, ?)",
+                (
+                    rowid,
+                    _fts_text(row["content"], new_rel_path, row["symbol"]),
+                    new_rel_path,
+                ),
+            )
+            moved += 1
+
+        self._patch_file_meta_rename(repo_id, old_rel_path, new_rel_path)
+        return moved
+
+    def _patch_file_meta_rename(
+        self, repo_id: int, old_rel_path: str, new_rel_path: str,
+    ) -> None:
+        """Update the `files` (file_meta) row for a rename, handling the
+        case where a row for the destination path already exists."""
         self._conn.execute(
             """UPDATE OR IGNORE files SET rel_path = ?
                WHERE repo_id = ? AND rel_path = ?""",
             (new_rel_path, repo_id, old_rel_path),
         )
-        # Drop the old files_meta row in case both ended up present
-        # (UPDATE OR IGNORE skips when the new key collides).
+        # If UPDATE OR IGNORE was a no-op due to UNIQUE collision, drop
+        # the stranded old row.
         self._conn.execute(
             "DELETE FROM files WHERE repo_id = ? AND rel_path = ?",
             (repo_id, old_rel_path),
         )
-        return moved
 
     def delete_chunks_by_repo_paths(
         self, repo_id: int, rel_paths: list[str],
