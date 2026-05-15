@@ -664,6 +664,106 @@ class Storage:
         )
         return rowid
 
+    # ----- L2 retroactive FTS5 augmentation (Trilha A) --------------------
+
+    def augment_fts_with_graph(self) -> dict[str, int]:
+        """Rebuild FTS5 rows with graph-derived terms appended.
+
+        For every ``chunks`` row whose ``(rel_path, line range)`` overlaps a
+        ``graph_nodes`` entry, the FTS5 document is regenerated as the
+        legacy ``_fts_text(...)`` *plus* the matching ``community_label`` and
+        ``node label``. Queries that mention a community-level concept
+        (e.g. "where is the hybrid retrieval pipeline?") then match these
+        chunks even when their body lacks the literal term.
+
+        Retroactive: no re-embedding, no re-walking. The augmentation
+        works on the existing index after a graph load. Idempotent:
+        running it twice produces the same FTS5 state.
+
+        Returns ``{augmented, unchanged, missing_graph}`` counts.
+        """
+        cur = self._conn.cursor()
+        # Check graph_nodes is populated before doing anything.
+        try:
+            has_graph = cur.execute(
+                "SELECT 1 FROM graph_nodes LIMIT 1"
+            ).fetchone() is not None
+        except sqlite3.OperationalError:
+            has_graph = False
+        if not has_graph:
+            return {"augmented": 0, "unchanged": 0, "missing_graph": 1}
+
+        # Find every chunk that overlaps a graph node. We compute the
+        # tightest match per chunk so multi-node files (most are) still
+        # produce a focused augmentation per chunk.
+        rows = cur.execute(
+            """
+            SELECT c.id, c.chunk_id, c.rel_path, c.symbol, c.content,
+                   c.start_line, c.end_line,
+                   n.label, n.community_label, n.source_location
+            FROM chunks c
+            JOIN graph_nodes n
+              ON n.source_file = c.rel_path
+            WHERE n.source_location IS NOT NULL
+            """
+        ).fetchall()
+
+        # Group rows by chunk id, pick the tightest node per chunk.
+        by_chunk: dict[int, dict] = {}
+        for r in rows:
+            cid = int(r["id"])
+            loc = r["source_location"] or ""
+            line: int | None = None
+            stripped = loc.lstrip("L")
+            try:
+                line = int(stripped.split(":")[0])
+            except (ValueError, TypeError):
+                continue
+            if not (r["start_line"] <= line <= r["end_line"]):
+                continue
+            best = by_chunk.get(cid)
+            cand_score = -abs(line - r["start_line"])  # closer = better
+            if best is None or best["_score"] < cand_score:
+                by_chunk[cid] = {
+                    "rowid": cid,
+                    "rel_path": r["rel_path"],
+                    "symbol": r["symbol"],
+                    "content": r["content"],
+                    "label": r["label"],
+                    "community_label": r["community_label"],
+                    "_score": cand_score,
+                }
+
+        augmented = 0
+        for cid, info in by_chunk.items():
+            extra_parts: list[str] = []
+            if info["community_label"]:
+                extra_parts.append(f"community: {info['community_label']}")
+            if info["label"]:
+                extra_parts.append(f"node: {info['label']}")
+            if not extra_parts:
+                continue
+            base = _fts_text(info["content"], info["rel_path"], info["symbol"])
+            new_doc = base + "\n" + "\n".join(extra_parts)
+            cur.execute("DELETE FROM fts_chunks WHERE rowid = ?", (cid,))
+            cur.execute(
+                "INSERT INTO fts_chunks(rowid, content, rel_path) VALUES (?, ?, ?)",
+                (cid, new_doc, info["rel_path"]),
+            )
+            augmented += 1
+
+        # The remaining chunks (no graph match) are left as-is.
+        total_chunks = int(
+            cur.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+        )
+        unchanged = total_chunks - augmented
+        self.commit()
+        log.info(
+            "fts_augment.done",
+            augmented=augmented, unchanged=unchanged, total=total_chunks,
+        )
+        return {"augmented": augmented, "unchanged": unchanged, "missing_graph": 0}
+
     def commit(self) -> None:
         self._conn.commit()
 

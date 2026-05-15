@@ -221,8 +221,43 @@ Phase 4 — declarative multi-repo manifest:
       from the manifest's directory; `~` expanded; `enabled: false`
       skipped. Mutually exclusive with `--repo`. 12 unit tests.
 
-**Total suite: 277 tests, all green. 5 enrichers, 4 retrieval streams,
-3 walkers, 9 MCP tools.**
+Trilha A — completing the RFC (post-1.5):
+- [x] **`find_tests_for`** (10th MCP tool). Path-pattern heuristic catches
+      `test_*`, `*_test`, `*.spec.*`, `*.test.*`, `/tests/`, `/test/`;
+      override via param. 4 new tests in `test_graph_tools.py`.
+- [x] **`Storage.augment_fts_with_graph()`** — RFC §1.5e retroactive L2.
+      Runs after every index pass (toggle `STROPHA_GRAPH_FTS_AUGMENT=1`,
+      default on). Idempotent: re-running produces same FTS5 state. 8
+      tests in `test_fts_augment.py`.
+- [x] **Doc hygiene**: RFC bumped from `Proposed` → `Implemented`; all
+      §9 phase tables flipped from `TODO` → `done` (32 cells);
+      system spec §16 Phase 2/3/4 checkboxes updated to reflect reality.
+
+Phase 3 — Sofisticação (local-only):
+- [x] **HyDE query rewrite** (`STROPHA_HYDE_ENABLED=1`). Routes the
+      query through Ollama (`qwen2.5-coder:1.5b` default) and embeds
+      the hypothetical doc on the dense stream only. BM25 + symbol
+      lanes keep the literal query. Fails gracefully → raw query
+      fallback. 6 tests in `test_hyde_and_recursive.py`.
+- [x] **Recursive retrieval / auto-merging** (`STROPHA_RECURSIVE_RETRIEVAL=1`).
+      Two passes: (1) parent promotion when 2+ siblings of the same
+      `parent_chunk_id` hit; (2) adjacency merge when chunks on the
+      same file are within `STROPHA_RECURSIVE_ADJACENCY=5` lines.
+      Cycle-safe, score-preserving. 10 tests.
+- [x] **File-watcher soft index** (`stropha watch`). stdlib polling,
+      debounce 2s, honours .gitignore. 8 tests in
+      `test_watch_and_bge_m3.py`.
+- [x] **Cost dashboard** (`stropha cost`). Aggregates hook log +
+      structlog into per-repo / per-adapter / per-graph tables. JSON
+      or rich.Table output. 11 tests in `test_cost.py`.
+
+Phase 4 — Escala:
+- [x] **`bge-m3` embedder adapter** — Pre-configured local fastembed
+      backend pinned to `BAAI/bge-m3`, the recommended multilingual
+      local fallback per spec §15.
+
+**Total suite: 334 tests, all green. 5 enrichers, 4 retrieval streams,
+3 walkers, 3 embedders, 10 MCP tools, 8 CLI commands.**
 
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 

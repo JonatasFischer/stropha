@@ -205,6 +205,15 @@ class Pipeline:
         except Exception as exc:
             log.warning("graph_vec_loader.failed", error=str(exc))
 
+        # L2 retroactive FTS augmentation. Toggle via STROPHA_GRAPH_FTS_AUGMENT
+        # (default 1). The augmentation is a no-op when graph_nodes is empty.
+        import os as _os
+        if _os.environ.get("STROPHA_GRAPH_FTS_AUGMENT", "1") == "1":
+            try:
+                self._storage.augment_fts_with_graph()  # type: ignore[attr-defined]
+            except Exception as exc:
+                log.warning("fts_augment.failed", error=str(exc))
+
     # --------------------------------------------------------------- internals
     def _index_one_repo(self, repo_path: Path) -> RepoStats:
         identity = detect_repo(repo_path)

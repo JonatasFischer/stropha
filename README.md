@@ -6,7 +6,7 @@
 > graph-aware tools (`find_callers`, `find_rationale`, …), and a swappable
 > adapter framework so every stage of the pipeline is pluggable.
 
-[![Tests](https://img.shields.io/badge/tests-277%20passing-brightgreen)](#evaluation)
+[![Tests](https://img.shields.io/badge/tests-334%20passing-brightgreen)](#evaluation)
 [![Python](https://img.shields.io/badge/python-3.12+-blue)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
@@ -68,13 +68,19 @@ embedder if you want premium quality.
 | Tree-sitter AST chunking (Python, TS/JS, Java, Kotlin, Go, Rust) | ✅ |
 | Custom chunkers (Vue SFC, Markdown headings, Gherkin features) | ✅ |
 | Hybrid retrieval — **4 streams** (dense + BM25 + symbol + graph-vec) fused via RRF | ✅ |
+| Optional HyDE query rewrite via Ollama (`STROPHA_HYDE_ENABLED=1`) | ✅ |
+| Recursive retrieval / auto-merging by parent + adjacent lines (`STROPHA_RECURSIVE_RETRIEVAL=1`) | ✅ |
+| Retroactive FTS5 augmentation with graph community labels | ✅ |
 | Class skeletons preserve parent context | ✅ |
 | Multi-repo indexing — `--repo` flags or declarative `--manifest repos.yaml` | ✅ |
 | Drift detection — config change ⇒ re-embed only what changed | ✅ |
 | Pluggable adapter framework — every stage swappable via YAML | ✅ |
 | Walkers: `git-ls-files`, `filesystem`, `nested-git` (monorepos) | ✅ |
 | Enrichers: `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | ✅ |
-| Graphify mirror + **5 graph traversal MCP tools** (`find_callers`, `find_related`, `get_community`, `find_rationale`, `trace_feature`) | ✅ |
+| Embedders: `local` (mxbai-embed-large-v1), `voyage`, `bge-m3` | ✅ |
+| Graphify mirror + **6 graph traversal MCP tools** (`find_callers`, `find_tests_for`, `find_related`, `get_community`, `find_rationale`, `trace_feature`) | ✅ |
+| Soft index — `stropha watch <repo>` auto-reindexes on file save | ✅ |
+| Cost dashboard — `stropha cost` aggregates structlog by adapter / repo | ✅ |
 | Post-commit hook (`stropha hook install`) — auto-refresh in background | ✅ |
 | Offline eval harness (Recall@K + MRR over a JSONL golden set) | ✅ |
 | Local LLM enrichers: Ollama (HTTP) and MLX (Apple Silicon native) | ✅ |
@@ -314,12 +320,13 @@ Add to your project's `.mcp.json`:
 | `get_file_outline(path)` | Plan a `Read` before consuming a whole file |
 | `list_repos()` | Multi-repo indexes — show available sources |
 | `find_callers(symbol)` | "Who calls X?" — needs graphify graph |
+| `find_tests_for(symbol)` | "Which tests cover X?" — same edges, filtered by test path patterns (`test_*`, `*_test`, `*.spec.*`, `*.test.*`, `/tests/`, `/test/`) |
 | `find_related(symbol)` | "What touches X?" — symmetric BFS, needs graph |
 | `get_community(symbol)` | "Show me X's cluster" — pre-computed communities |
 | `find_rationale(symbol)` | "Why does X exist?" — links code to docs/ADRs |
 | `trace_feature(feature)` | "How does feature X flow through the code?" — DFS through `calls` edges from token-overlap entry points (Gherkin scenario → step → method) |
 
-The five graph-aware tools return `{graph_loaded: false, ...}` with a
+The six graph-aware tools return `{graph_loaded: false, ...}` with a
 clear error message when no graphify graph is present, instead of failing
 silently.
 
@@ -353,6 +360,16 @@ stropha eval              # run golden dataset, report Recall@K + MRR
   --golden PATH           # default tests/eval/golden.jsonl
   --top-k INT             # default 10
   --tag NAME              # filter cases by tag
+  --json                  # machine-readable output
+
+stropha watch             # file-watcher soft index (Ctrl-C to stop)
+  --repo PATH             # defaults to STROPHA_TARGET_REPO or cwd
+  --interval FLOAT        # polling interval, default 1.0s
+  --debounce FLOAT        # quiet window before re-index, default 2.0s
+  --full-refresh          # run a full Pipeline pass each cycle
+
+stropha cost              # aggregate hook log into per-adapter / per-repo view
+  --log-path PATH         # override default hook log path
   --json                  # machine-readable output
 ```
 
@@ -496,6 +513,11 @@ pipeline:
 | `STROPHA_HOOK_PROJECT_DIR` | Where stropha is installed (the directory with the `uv` venv). Defaults to baked-in value, else `$TOPLEVEL`. |
 | `STROPHA_HOOK_INDEX_PATH` | Override `STROPHA_INDEX_PATH` for the hook's index step. Defaults to baked-in value. |
 | `STROPHA_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` |
+| `STROPHA_HYDE_ENABLED=1` | Enable HyDE query rewrite via Ollama on the dense stream |
+| `STROPHA_HYDE_MODEL` | Override the Ollama model used for HyDE (default `qwen2.5-coder:1.5b`) |
+| `STROPHA_RECURSIVE_RETRIEVAL=1` | Enable parent + adjacent-line auto-merge in `search` results |
+| `STROPHA_RECURSIVE_ADJACENCY=5` | Line gap considered "adjacent" for auto-merge (default 5) |
+| `STROPHA_GRAPH_FTS_AUGMENT=1` | Default. When the graph mirror is populated, FTS5 rows pick up community labels |
 
 ## Post-commit automation
 
@@ -642,18 +664,22 @@ Tracked in `CLAUDE.md` (live state) and the spec docs:
 
 - ✅ Phase 1 (MVP MCP)
 - ✅ Pipeline-adapters Phase 1–4 (full adapter framework)
-- ✅ Graphify integration Phase 1.5 (loader + 4 MCP tools + hook installer + L2 enricher)
+- ✅ Graphify integration Phase 1.5 (loader + 6 MCP tools + hook installer + L2 enricher + retroactive FTS5 augmentation)
 - ✅ Trilha A L3 — graph node embeddings as a 4th RRF stream
-- ✅ Phase 3 `trace_feature` tool (Gherkin → step → method)
+- ✅ Phase 2 `find_callers` / `find_tests_for`
+- ✅ Phase 3 `trace_feature`, HyDE, recursive retrieval, file-watcher soft index, cost dashboard
 - ✅ Phase 5 local enrichers — `ollama` and `mlx` shipped (no cloud required)
 - ✅ Walker variants — `filesystem` (non-git) and `nested-git` (monorepos)
-- ✅ Phase 4 declarative `--manifest` for multi-repo lists
+- ✅ Phase 4 declarative `--manifest` for multi-repo lists + cross-repo `stropha hook install`
+- ✅ Phase 4 `bge-m3` embedder as multilingual local fallback
 - ✅ Phase 2 evaluation harness (offline Recall@K + MRR)
-- ⏳ Phase 3 file-watcher soft index
-- ⏳ Phase 2 OpenTelemetry tracing
-- ⏳ Phase 4 storage backends (`lancedb` first — embedded; `qdrant`, `pgvector` later)
-- ⏳ Phase 2 reranker (Voyage `rerank-2.5` — cloud)
-- ⏳ Phase 2 Contextual Retrieval (Anthropic — cloud)
+- ⏳ Phase 3 glossário de domínio embeddado
+- ⏳ Phase 3 cache semântico de queries
+- ⏳ Phase 4 storage backends (`lancedb` first — embedded; `qdrant`, `pgvector` need a server)
+- ⏳ Phase 4 indexação on-demand de dependências externas
+- ⏳ Phase 2 OpenTelemetry tracing (deferred — `structlog` covers immediate observability)
+- ⏳ Phase 2 reranker (Voyage `rerank-2.5` — cloud, out of scope)
+- ⏳ Phase 2 Contextual Retrieval (Anthropic — cloud, out of scope)
 
 Full design discussion lives in:
 

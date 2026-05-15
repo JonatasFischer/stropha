@@ -1149,35 +1149,35 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 **Critério de saída**: Claude Code usa o RAG sem ser instruído. Critério objetivo: queries simbólicas/conceituais retornam o chunk certo no top-3. Validado com `where is the FSRS calculator` (rank 3), `calculateNewStability` (rank 1), `EnrollmentRepository findByUsername` (rank 1) usando o embedder local de fallback.
 
 ### Phase 2 — Qualidade (1 semana)
-- [ ] Reranking Voyage rerank-2.5.
-- [ ] Contextual retrieval (Anthropic).
-- [ ] Summary generation via Haiku (cached).
-- [ ] Symbol graph com `find_callers`, `find_tests_for`.
-- [ ] Golden dataset inicial (50 queries).
-- [ ] Evaluation harness com RAGAS.
-- [ ] Tracing OpenTelemetry → Langfuse local.
+- [ ] Reranking Voyage rerank-2.5. *(cloud — deferred per local-only policy)*
+- [ ] Contextual retrieval (Anthropic). *(cloud — deferred)*
+- [ ] Summary generation via Haiku (cached). *(cloud — deferred; local equivalent via `enricher/ollama` + `enricher/mlx` shipped)*
+- [x] Symbol graph com `find_callers`, `find_tests_for`. *(MCP tools shipped: `find_callers`, `find_tests_for`, `find_related`, `get_community`, `find_rationale`, `trace_feature`)*
+- [x] Golden dataset inicial (~30 queries shipped, scaling to 50 is incremental).
+- [x] Evaluation harness com Recall@K + MRR. *(RAGAS deferred — requires LLM judge; local Recall@K/MRR shipped via `stropha eval`)*
+- [ ] Tracing OpenTelemetry → Langfuse local. *(deferred — structlog covers the immediate observability need)*
 
 **Critério de saída**: Recall@10 ≥ 0,85 no golden set.
 
 ### Phase 3 — Sofisticação (2 semanas)
-- [ ] HyDE opcional, query routing.
-- [ ] Recursive retrieval / auto-merging.
-- [ ] Tool `trace_feature` (Gherkin → step → método).
+- [x] HyDE opcional, query routing. *(local-only via Ollama enricher pipeline)*
+- [x] Recursive retrieval / auto-merging. *(via parent_chunk_id + adjacent-line merge)*
+- [x] Tool `trace_feature` (Gherkin → step → método). *(MCP tool shipped)*
 - [ ] Glossário de domínio embeddado.
-- [ ] Soft index para working tree (file watcher).
+- [x] Soft index para working tree (file watcher). *(`stropha watch <repo>` ships with debounce)*
 - [ ] Cache semântico de queries.
-- [ ] Cost dashboard.
+- [x] Cost dashboard. *(`stropha cost` aggregates structlog by adapter_id)*
 
 ### Phase 4 — Escala / extensão
 - [x] **Foundation multi-repo**: schema v2 adiciona tabela `repos` + coluna `chunks.repo_id` + tool MCP `list_repos`. Cada `SearchHit` carrega `repo` com URL, branch e HEAD para o cliente fazer `git clone`. Normalização de URL deduplica SSH/HTTPS do mesmo repo; auth tokens são removidos antes da persistência. Detalhes em `src/stropha/ingest/git_meta.py`.
 - [x] **Multi-repo indexer UX**: `stropha index --repo A --repo B` (flag `-r` repetível) percorre cada repo sequencialmente compartilhando a mesma Storage e Embedder. `chunk_id` é namespaced por `normalized_key` (via `make_chunk_id(..., repo_key=...)`) — repos diferentes com arquivos idênticos não colidem. `IndexPipeline` aceita `repos: list[Path]`; `IndexStats` agrega contadores por repo (`stats.repos: list[RepoStats]`). `--rebuild` limpa chunks mas preserva tabela `repos`, mantendo FKs estáveis entre rebuilds.
-- [ ] Manifest YAML para listas declarativas de repos.
-- [ ] Auto-discovery de nested `.git` durante o walk (monorepos com submódulos / vendored deps).
+- [x] Manifest YAML para listas declarativas de repos. *(`stropha index --manifest repos.yaml`)*
+- [x] Auto-discovery de nested `.git` durante o walk (monorepos com submódulos / vendored deps). *(`walker/nested-git` adapter)*
 - [ ] Indexação de dependências externas (Quarkus, Vue) on-demand.
-- [ ] Modelo de embedding self-hosted (bge-m3) como fallback offline.
-- [ ] Deploy remoto com OAuth 2.1.
-- [ ] Multi-tenant com RBAC.
-- [ ] Web UI para evaluation/debug.
+- [x] Modelo de embedding self-hosted (bge-m3) como fallback offline. *(`embedder/local` adapter exposes `BAAI/bge-m3` via fastembed)*
+- [ ] Deploy remoto com OAuth 2.1. *(deferred — local-first policy)*
+- [ ] Multi-tenant com RBAC. *(deferred — local-first policy)*
+- [ ] Web UI para evaluation/debug. *(deferred)*
 
 ---
 

@@ -43,7 +43,16 @@ class SearchEngine:
         """
         if not query.strip():
             return []
-        query_vec = self._embedder.embed_query(query)
+        # HyDE — only the dense embedding sees the hypothetical doc; BM25
+        # and the symbol-token lane keep the literal query. Falls back
+        # to the raw query if disabled or the LLM call fails.
+        from .hyde import maybe_hyde_rewrite
+
+        dense_query = maybe_hyde_rewrite(query) or query
+        if dense_query is not query:
+            log.info("search.hyde_rewrite", original_len=len(query),
+                     rewritten_len=len(dense_query))
+        query_vec = self._embedder.embed_query(dense_query)
         dense_hits = self._storage.search_dense(query_vec, k=candidate_k)
         sparse_hits = self._storage.search_bm25(query, k=candidate_k)
         symbol_hits = self._storage.search_symbol_tokens(query, k=20)
@@ -52,8 +61,13 @@ class SearchEngine:
         if not streams:
             return []
         if len(streams) == 1:
-            return streams[0][:top_k]
-        return rrf_fuse(*streams, k=rrf_k, top_k=top_k)
+            fused = streams[0][:top_k]
+        else:
+            fused = rrf_fuse(*streams, k=rrf_k, top_k=top_k)
+        # Recursive retrieval / auto-merge (Phase 3 §6.4). No-op when
+        # STROPHA_RECURSIVE_RETRIEVAL is unset / 0 — back-compat preserved.
+        from .recursive import merge_hits
+        return merge_hits(fused, self._storage)
 
     def search_dense_only(self, query: str, top_k: int = 10) -> list[SearchHit]:
         """Escape hatch for debugging or A/B comparison."""

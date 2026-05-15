@@ -37,6 +37,7 @@ from .retrieval.graph import (
     find_callers as graph_find_callers,
     find_rationale as graph_find_rationale,
     find_related as graph_find_related,
+    find_tests_for as graph_find_tests_for,
     get_community as graph_get_community,
     graph_loaded,
     has_rationale_edges,
@@ -455,6 +456,38 @@ def find_rationale(
             "message": "Graph loaded but no `rationale_for` edges present yet.",
         }
     return graph_find_rationale(app.storage, symbol, limit=limit)
+
+
+@mcp.tool(
+    title="Find tests covering a symbol",
+    description=(
+        "Return code chunks in test files that call / reference / implement "
+        "the given symbol. Walks `calls`, `references`, `implements`, `tests` "
+        "edges from the graphify graph and filters callers whose source_file "
+        "matches a common test convention (test_*, *_test, *.spec.*, "
+        "*.test.*, /tests/, /test/). Pass custom patterns when your project "
+        "uses other conventions. Requires the graphify graph."
+    ),
+)
+def find_tests_for(
+    symbol: str,
+    *,
+    ctx: Context,
+    limit: int = 20,
+    test_path_patterns: list[str] | None = None,
+) -> dict:
+    """Return tests that exercise ``symbol`` (path-pattern filtered)."""
+    app = _ctx(ctx)
+    if not graph_loaded(app.storage):
+        return _graph_unavailable() | {"symbol": symbol}
+    patterns = (
+        tuple(test_path_patterns)
+        if test_path_patterns
+        else ("test_", "_test", "/tests/", "/test/", ".spec.", ".test.")
+    )
+    return graph_find_tests_for(
+        app.storage, symbol, limit=limit, test_path_patterns=patterns,
+    )
 
 
 @mcp.tool(

@@ -418,6 +418,91 @@ def adapters_list(
 
 
 # ---------------------------------------------------------------------------
+# Cost dashboard (Phase 3 §11.4 — aggregate structlog by adapter / repo)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def cost(
+    log_path: Path = typer.Option(
+        None, "--log-path",
+        help="Override the hook log path. Defaults to ~/.cache/stropha-hook*.log",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json",
+        help="Emit JSON instead of the rich table.",
+    ),
+) -> None:
+    """Aggregate the structured log trail into a per-repo / per-adapter view."""
+    from .cost import aggregate, default_log_paths, render_json, render_table
+
+    paths = [log_path] if log_path else default_log_paths()
+    if not paths:
+        console.print("[yellow]No logs found. Has the hook ever run?[/yellow]")
+        raise typer.Exit(code=1)
+
+    report = aggregate(paths)
+    if json_out:
+        import sys
+        sys.stdout.write(render_json(report))
+        sys.stdout.write("\n")
+        raise typer.Exit(code=0)
+    rendered = render_table(report)
+    if rendered is None:
+        console.print(f"[yellow]Log present but contained no recognisable events:[/yellow] "
+                      f"{', '.join(str(p) for p in paths)}")
+        raise typer.Exit(code=1)
+    console.print(f"[dim]Scanned: {', '.join(str(p) for p in paths)}[/dim]")
+    console.print(rendered)
+
+
+# ---------------------------------------------------------------------------
+# Soft index (Phase 3 §8 — file watcher with debounce)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def watch(
+    repo: Path = typer.Option(
+        None, "--repo", "-r",
+        help="Repo to watch. Defaults to STROPHA_TARGET_REPO or cwd.",
+    ),
+    interval: float = typer.Option(
+        1.0, "--interval", min=0.1, max=60.0,
+        help="Polling interval in seconds.",
+    ),
+    debounce: float = typer.Option(
+        2.0, "--debounce", min=0.0, max=60.0,
+        help="Wait this many seconds of no further changes before re-indexing.",
+    ),
+    full_refresh: bool = typer.Option(
+        False, "--full-refresh",
+        help="Run a full Pipeline pass on every cycle (slower but covers graphify reload).",
+    ),
+) -> None:
+    """Watch a working tree and re-index on file changes.
+
+    Press Ctrl-C to stop.
+    """
+    from .watch import watch_repo
+
+    target = repo or _load_config().target_repo
+    console.print(
+        f"[bold]Watching:[/bold] {target.resolve()}\n"
+        f"[dim]interval={interval}s · debounce={debounce}s · full_refresh={full_refresh}[/dim]\n"
+        "[dim]Ctrl-C to stop.[/dim]"
+    )
+    try:
+        watch_repo(
+            target, interval_s=interval, debounce_s=debounce,
+            full_refresh=full_refresh,
+        )
+    except StrophaError as exc:
+        console.print(f"[red]Watch failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+# ---------------------------------------------------------------------------
 # Evaluation harness (Phase 2 §16 — golden set + Recall@K + MRR)
 # ---------------------------------------------------------------------------
 

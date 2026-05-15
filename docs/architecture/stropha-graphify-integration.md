@@ -1,8 +1,8 @@
 # RAG ↔ Graphify Integration & Post-Commit Automation
 
-> **Status:** Proposed
+> **Status:** Implemented (Fase 1.5a/b/c/e/f shipped; cross-repo hook v=3 shipped)
 > **Versão:** 1.0
-> **Data:** 2026-05-14
+> **Data:** 2026-05-14 (RFC) — 2026-05-15 (Implementação)
 > **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
 > **Documentos relacionados:**
 > - `docs/architecture/stropha-system.md` (spec mestre — §3.5 symbol graph, §6.3.5 query routing, §8 atualização incremental, §9.2 MCP tools)
@@ -868,12 +868,12 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 
 | Task | Arquivo | Status |
 |---|---|---|
-| Adicionar tabelas `graph_nodes`, `graph_edges` ao migrate | `storage/sqlite.py` | TODO |
-| Criar `ingest/graphify_loader.py` com `GraphifyLoader` | novo | TODO |
-| Hook `IndexPipeline.run()` para chamar loader se grafo stale | `ingest/pipeline.py` | TODO |
-| Adicionar campo `graph` ao `Storage.stats()` | `storage/sqlite.py` | TODO |
-| Unit tests: loader idempotência, filtro de confiança, staleness | `tests/unit/test_graphify_loader.py` | TODO |
-| E2E test: índice + loader contra `graphify-out/` fixture | `tests/eval/test_graph_load.py` | TODO |
+| Adicionar tabelas `graph_nodes`, `graph_edges` ao migrate | `storage/sqlite.py` | done |
+| Criar `ingest/graphify_loader.py` com `GraphifyLoader` | novo | done |
+| Hook `IndexPipeline.run()` para chamar loader se grafo stale | `ingest/pipeline.py` | done |
+| Adicionar campo `graph` ao `Storage.stats()` | `storage/sqlite.py` | done |
+| Unit tests: loader idempotência, filtro de confiança, staleness | `tests/unit/test_graphify_loader.py` | done |
+| E2E test: índice + loader contra `graphify-out/` fixture | `tests/eval/test_graph_load.py` | done |
 
 **Critério de saída**: `stats` mostra contagem de nós/edges; rodar `index` duas vezes não duplica linhas.
 
@@ -881,12 +881,12 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 
 | Task | Arquivo | Status |
 |---|---|---|
-| `retrieval/graph.py` com `find_callers`, `find_related`, `get_community` | novo | TODO |
-| Wire tools no `server.py` com gating condicional | `server.py` | TODO |
-| Symbol resolution helper (`_resolve_symbol_to_node`) | `retrieval/graph.py` | TODO |
-| `find_rationale` registrado se edges > 0 | `server.py` | TODO |
-| MCP smoke test: handshake + 3 tools | `tests/unit/test_mcp_graph_tools.py` | TODO |
-| Golden eval: 5 queries simbólicas com chamadas conhecidas | `tests/eval/golden/symbolic.jsonl` | TODO |
+| `retrieval/graph.py` com `find_callers`, `find_related`, `get_community` | novo | done |
+| Wire tools no `server.py` com gating condicional | `server.py` | done |
+| Symbol resolution helper (`_resolve_symbol_to_node`) | `retrieval/graph.py` | done |
+| `find_rationale` registrado se edges > 0 | `server.py` | done |
+| MCP smoke test: handshake + 3 tools | `tests/unit/test_mcp_graph_tools.py` | done |
+| Golden eval: 5 queries simbólicas com chamadas conhecidas | `tests/eval/golden/symbolic.jsonl` | done |
 
 **Critério de saída**: `find_callers("StudyService.submitAnswer")` retorna ≥1 chamador conhecido (validado contra o Mimoria real).
 
@@ -894,13 +894,13 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 
 | Task | Arquivo | Status |
 |---|---|---|
-| `tools/hook_install.py` com install/uninstall/status | novo | TODO |
-| Template do script (post-commit.sh.tmpl) | `tools/hook_templates/` | TODO |
-| Wire subcomando `hook` no `cli.py` | `cli.py` | TODO |
-| Detecção de `core.hooksPath` | `tools/hook_install.py` | TODO |
-| Detecção de graphify-hook coexistente | `tools/hook_install.py` | TODO |
-| Tests: install em fixture git repo, idempotência, uninstall limpo | `tests/unit/test_hook_install.py` | TODO |
-| Smoke: instalar no Mimoria, fazer commit-allow-empty, verificar log | manual | TODO |
+| `tools/hook_install.py` com install/uninstall/status | novo | done |
+| Template do script (post-commit.sh.tmpl) | `tools/hook_templates/` | done |
+| Wire subcomando `hook` no `cli.py` | `cli.py` | done |
+| Detecção de `core.hooksPath` | `tools/hook_install.py` | done |
+| Detecção de graphify-hook coexistente | `tools/hook_install.py` | done |
+| Tests: install em fixture git repo, idempotência, uninstall limpo | `tests/unit/test_hook_install.py` | done |
+| Smoke: instalar no Mimoria, fazer commit-allow-empty, verificar log | manual | done |
 
 **Critério de saída**: commit no Mimoria dispara refresh em background, log mostra "success", `find_callers` reflete o commit em ≤60s.
 
@@ -920,12 +920,12 @@ Adiciona §4.5 — labels de nó/community entram no documento FTS5 dos chunks c
 
 | Task | Arquivo | Status |
 |---|---|---|
-| `Storage.augment_fts_with_graph()` — UPDATE em FTS5 com JOIN graph_nodes ↔ chunks | `storage/sqlite.py` | TODO |
-| Hook em `IndexPipeline.run()`: chamar augment_fts após loader.load() | `ingest/pipeline.py` | TODO |
-| Toggle via `STROPHA_GRAPH_FTS_AUGMENT` (default `1`) | `config.py` | TODO |
-| Idempotência: re-augment não duplica tokens (UPDATE em vez de APPEND com guard) | `storage/sqlite.py` | TODO |
-| Test: chunk com node match recebe extras; sem match não muda | `tests/unit/test_fts_augment.py` | TODO |
-| Quality test: BM25 query por community-term match chunk-related | `tests/eval/golden/lexical.jsonl` | TODO |
+| `Storage.augment_fts_with_graph()` — UPDATE em FTS5 com JOIN graph_nodes ↔ chunks | `storage/sqlite.py` | done |
+| Hook em `IndexPipeline.run()`: chamar augment_fts após loader.load() | `ingest/pipeline.py` | done |
+| Toggle via `STROPHA_GRAPH_FTS_AUGMENT` (default `1`) | `config.py` | done |
+| Idempotência: re-augment não duplica tokens (UPDATE em vez de APPEND com guard) | `storage/sqlite.py` | done |
+| Test: chunk com node match recebe extras; sem match não muda | `tests/unit/test_fts_augment.py` | done |
+| Quality test: BM25 query por community-term match chunk-related | `tests/eval/golden/lexical.jsonl` | done |
 
 **Critério de saída**: query "review stability rating" matcha mais chunks Fsrs-related com L2 que sem (ganho de recall mensurável no golden lexical).
 
@@ -937,13 +937,13 @@ Adiciona §4.6 — vetores semânticos dos nodes do grafo entram numa 4ª stream
 
 | Task | Arquivo | Status |
 |---|---|---|
-| Schema: `vec_graph_nodes` virtual table + `graph_node_embeddings` metadata | `storage/sqlite.py` | TODO |
-| `embed_graph_nodes()` no loader, com skip-fresh por `(node, model, label_hash)` | `ingest/graphify_loader.py` | TODO |
-| `Storage.search_graph_dense()` — análogo a `search_dense` mas sobre `vec_graph_nodes` | `storage/sqlite.py` | TODO |
-| `SearchEngine.search()` — adicionar 4ª stream condicional ao toggle | `retrieval/search.py` | TODO |
-| Toggle via `STROPHA_GRAPH_VEC_AUGMENT` (default `0`) | `config.py` | TODO |
-| Test: search com toggle on/off compara resultados; idempotência do embed | `tests/unit/test_graph_vec.py` | TODO |
-| A/B no golden dataset: NDCG@10 com/sem L3 | `tests/eval/test_graph_vec_quality.py` | TODO |
+| Schema: `vec_graph_nodes` virtual table + `graph_node_embeddings` metadata | `storage/sqlite.py` | done |
+| `embed_graph_nodes()` no loader, com skip-fresh por `(node, model, label_hash)` | `ingest/graphify_loader.py` | done |
+| `Storage.search_graph_dense()` — análogo a `search_dense` mas sobre `vec_graph_nodes` | `storage/sqlite.py` | done |
+| `SearchEngine.search()` — adicionar 4ª stream condicional ao toggle | `retrieval/search.py` | done |
+| Toggle via `STROPHA_GRAPH_VEC_AUGMENT` (default `0`) | `config.py` | done |
+| Test: search com toggle on/off compara resultados; idempotência do embed | `tests/unit/test_graph_vec.py` | done |
+| A/B no golden dataset: NDCG@10 com/sem L3 | `tests/eval/test_graph_vec_quality.py` | done |
 
 **Critério de saída**: A/B golden mostra NDCG@10 ≥ baseline (não regride). Se regredir, ficha kept opt-in com warning explícito no help.
 

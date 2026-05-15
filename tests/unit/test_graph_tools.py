@@ -423,6 +423,88 @@ def test_trace_feature_respects_max_depth(tmp_path: Path, storage: Storage) -> N
     assert len(chain) <= 4
 
 
+# --------------------------------------------------------------------------- find_tests_for
+
+
+def test_find_tests_for_empty_when_unknown(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import find_tests_for
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[{"id": "x", "label": "X"}], edges=[],
+    )
+    result = find_tests_for(storage, "Missing")
+    assert result["tests"] == []
+    assert result["resolved_node"] is None
+
+
+def test_find_tests_for_filters_to_test_paths(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import find_tests_for
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {"id": "tgt", "label": "submit_answer", "source_file": "src/study.py"},
+            # tests under tests/ — should match
+            {"id": "t1", "label": "test_submits", "source_file": "tests/test_study.py"},
+            # Production code that also calls it — should NOT match
+            {"id": "prod", "label": "Controller.do", "source_file": "src/controller.py"},
+            # Spec file in JS convention — should match
+            {"id": "t2", "label": "submitsCorrectly", "source_file": "ui/answer.spec.ts"},
+        ],
+        edges=[
+            {"source": "t1", "target": "tgt", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "prod", "target": "tgt", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "t2", "target": "tgt", "relation": "references", "confidence": "EXTRACTED"},
+        ],
+    )
+    result = find_tests_for(storage, "submit_answer")
+    ids = {t["node_id"] for t in result["tests"]}
+    assert ids == {"t1", "t2"}
+    assert "prod" not in ids
+
+
+def test_find_tests_for_custom_patterns(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import find_tests_for
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {"id": "tgt", "label": "X"},
+            # Kotlin convention — no default pattern matches
+            {"id": "kspec", "label": "XSpec", "source_file": "src/test/kotlin/XSpec.kt"},
+        ],
+        edges=[
+            {"source": "kspec", "target": "tgt", "relation": "tests", "confidence": "EXTRACTED"},
+        ],
+    )
+    # Default patterns include "/test/" so this matches via that alone
+    result = find_tests_for(storage, "X")
+    assert {t["node_id"] for t in result["tests"]} == {"kspec"}
+
+    # But custom patterns can narrow
+    result2 = find_tests_for(storage, "X", test_path_patterns=("Spec.kt",))
+    assert {t["node_id"] for t in result2["tests"]} == {"kspec"}
+
+
+def test_find_tests_for_drops_inferred_edges(tmp_path: Path, storage: Storage) -> None:
+    from stropha.retrieval.graph import find_tests_for
+
+    _seed_graph(
+        storage, tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {"id": "tgt", "label": "T"},
+            {"id": "tx", "label": "test_x", "source_file": "tests/test_x.py"},
+        ],
+        edges=[
+            {"source": "tx", "target": "tgt", "relation": "calls", "confidence": "INFERRED"},
+        ],
+    )
+    # Default loader filters INFERRED → no rows present, find returns empty
+    result = find_tests_for(storage, "T")
+    assert result["tests"] == []
+
+
 def test_trace_feature_breaks_cycles(tmp_path: Path, storage: Storage) -> None:
     from stropha.retrieval.graph import trace_feature
 

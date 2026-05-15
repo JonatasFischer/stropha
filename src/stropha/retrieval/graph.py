@@ -475,6 +475,82 @@ def find_rationale(
     }
 
 
+def find_tests_for(
+    storage: Storage,
+    symbol: str,
+    *,
+    limit: int = 20,
+    confidence: tuple[str, ...] = ("EXTRACTED",),
+    test_path_patterns: tuple[str, ...] = ("test_", "_test", "/tests/", "/test/", ".spec.", ".test."),
+) -> dict[str, Any]:
+    """Return test code that exercises ``symbol``.
+
+    Closes the trio promised by ``stropha-system.md`` §3.5 and the RFC
+    intro (``find_callers`` / ``find_tests_for`` / ``trace_feature``).
+
+    Strategy:
+      1. Resolve ``symbol`` to a node in the graph.
+      2. Find every node that ``calls`` / ``references`` / ``implements``
+         the target with ``EXTRACTED`` confidence.
+      3. Filter callers whose ``source_file`` matches any of
+         ``test_path_patterns`` — that's the test surface.
+      4. Hydrate hits with the matching chunk.
+
+    The path-pattern heuristic catches the common conventions
+    (``tests/test_foo.py``, ``foo.test.ts``, ``FooSpec.kt``, …).
+    Override ``test_path_patterns`` to suit a project's layout.
+    """
+    limit = max(1, min(limit, 100))
+    target_id = resolve_symbol_to_node(storage, symbol)
+    if target_id is None:
+        return {"symbol": symbol, "resolved_node": None, "tests": []}
+
+    conf_placeholders = ",".join("?" * len(confidence))
+    # We accept any edge type that signals "this node touches the target".
+    rel_set = ("calls", "references", "implements", "tests")
+    rel_placeholders = ",".join("?" * len(rel_set))
+
+    rows = storage._conn.execute(  # noqa: SLF001
+        f"""SELECT n.*, e.relation, e.confidence, e.confidence_score
+            FROM graph_edges e
+            JOIN graph_nodes n ON n.node_id = e.source
+            WHERE e.target = ?
+              AND e.relation IN ({rel_placeholders})
+              AND e.confidence IN ({conf_placeholders})
+            ORDER BY COALESCE(e.confidence_score, 0) DESC
+            LIMIT ?""",
+        (target_id, *rel_set, *confidence, limit * 4),
+    ).fetchall()
+
+    tests: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    pat_lower = tuple(p.lower() for p in test_path_patterns)
+    for r in rows:
+        sf = (r["source_file"] or "").lower()
+        if not any(p in sf for p in pat_lower):
+            continue
+        if r["node_id"] in seen:
+            continue
+        seen.add(r["node_id"])
+        node = _hydrate_node(storage, r).as_dict()
+        node["edge"] = {
+            "relation": r["relation"],
+            "confidence": r["confidence"],
+            "confidence_score": r["confidence_score"],
+        }
+        tests.append(node)
+        if len(tests) >= limit:
+            break
+
+    return {
+        "symbol": symbol,
+        "resolved_node": target_id,
+        "tests": tests,
+        "test_path_patterns": list(test_path_patterns),
+        "provenance": "graphify-out/graph.json (calls/references/implements/tests edges)",
+    }
+
+
 def has_rationale_edges(storage: Storage) -> bool:
     """True iff at least one ``rationale_for`` edge exists.
 
