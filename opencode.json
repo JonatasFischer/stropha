@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "stropha": {
+      "type": "local",
+      "command": [
+        "/Users/jonatas/.local/bin/uv",
+        "--directory",
+        "/Users/jonatas/sources/rag",
+        "run",
+        "stropha-mcp"
+      ],
+      "enabled": true,
+      "env": {
+        "STROPHA_TARGET_REPO": "/Users/jonatas/sources/rag",
+        "STROPHA_INDEX_PATH": "/Users/jonatas/sources/rag/.stropha/index.db",
+        "STROPHA_LOG_LEVEL": "WARNING"
+      }
+    }
+  }
+}

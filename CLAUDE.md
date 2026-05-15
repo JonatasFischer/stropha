@@ -60,6 +60,93 @@ Phase 4 (multi-repo) ✓:
 - [x] `--rebuild` clears chunks but preserves the `repos` table — identities
       survive rebuilds so FK references stay stable across runs.
 
+Pipeline-adapters Phase 1 ✓ (per `docs/architecture/stropha-pipeline-adapters.md`):
+- [x] `Stage` protocol + `StageContext`/`StageHealth` + `@register_adapter`
+      decorator with auto-import discovery (`stropha.pipeline`,
+      `stropha.adapters`).
+- [x] `EmbedderStage` and `EnricherStage` protocols (`stropha.stages.*`).
+      Legacy `stropha.embeddings.Embedder` Protocol kept as the minimal
+      back-compat subset.
+- [x] Migrated `LocalEmbedder` + `VoyageEmbedder` to
+      `stropha.adapters.embedder.*` with `@register_adapter`. Old import
+      paths (`stropha.embeddings.local`, `…voyage`) still resolve via
+      shims.
+- [x] New enricher adapters: `noop` (default — identity) and
+      `hierarchical` (prepends parent skeleton).
+- [x] Pydantic-validated config: YAML (`./stropha.yaml`,
+      `~/.stropha/config.yaml`) + env-var overlay
+      (`STROPHA_<STAGE>__<KEY>__<SUBKEY>`) + CLI flags
+      (`--enricher`, `--embedder`). Legacy env vars
+      (`STROPHA_LOCAL_EMBED_MODEL`, `STROPHA_VOYAGE_EMBED_MODEL`,
+      `STROPHA_VOYAGE_EMBED_DIM`) keep working as aliases routed
+      strictly by the resolved adapter.
+- [x] Schema v3: `chunks.embedding_text` + `chunks.enricher_id` +
+      `enrichments(content_hash, enricher_id)` cache table.
+      Migration v1→v2→v3 is idempotent; legacy NULL `enricher_id`
+      is treated as `'noop'` so upgrades do NOT trigger full re-embed.
+- [x] Adapter-drift detection (ADR-004): switching the active enricher
+      (e.g. `--enricher hierarchical`) automatically re-enriches +
+      re-embeds the drifted chunks — no `--rebuild` needed. Per-chunk
+      cache via `enrichments` makes repeat enrichment near-free.
+- [x] New CLI: `stropha pipeline show` (resolved composition + health),
+      `stropha pipeline validate` (probe), `stropha adapters list`.
+- [x] 30 new unit tests (`test_pipeline_framework.py`,
+      `test_enricher_adapters.py`, `test_pipeline_drift.py`) on top of
+      the 53 pre-existing → 83 total, all green.
+
+Pipeline-adapters Phase 2 ✓:
+- [x] `WalkerStage` / `StorageStage` / `RetrievalStage` protocols.
+- [x] `adapters/walker/git_ls_files.py`, `adapters/storage/sqlite_vec.py`
+      (subclass of `Storage` so the full read/write surface is inherited),
+      `adapters/retrieval/hybrid_rrf.py`.
+- [x] `build_stages()` extended to all 5 stages with cross-stage
+      injection (storage gets embedder.dim; retrieval gets storage +
+      embedder).
+- [x] `Pipeline` class uses walker + storage adapters; `cli.py` `index`
+      / `search` / `stats` route through the builder; `pipeline show`
+      drops the "(legacy)" rows for migrated stages.
+- [x] Legacy env aliases extended: `STROPHA_INDEX_PATH` →
+      `pipeline.storage.config.path`; `STROPHA_MAX_FILE_BYTES` →
+      `pipeline.walker.config.max_file_bytes`.
+- [x] 14 new unit tests (`test_phase2_adapters.py`).
+
+Pipeline-adapters Phase 3 ✓:
+- [x] `ChunkerStage` + `LanguageChunkerStage` protocols.
+- [x] `adapters/chunker/tree_sitter_dispatch.py` — dispatcher adapter
+      with sub-pipeline (language → sub-adapter) exposed via YAML
+      `chunker.config.languages.*`.
+- [x] Per-language sub-adapters under `adapters/chunker/languages/`:
+      `ast-generic`, `heading-split`, `sfc-split`,
+      `regex-feature-scenario`, `file-level`. All wrap the existing
+      classes under `ingest/chunkers/` to preserve test coverage.
+- [x] `Pipeline` builds + uses the chunker adapter; output is
+      byte-identical (same `chunk_id`s) to the legacy `Chunker` for
+      every supported language.
+- [x] `pipeline show` / `pipeline validate` cover all 6 stages — no
+      more "(legacy)" rows.
+- [x] 11 new unit tests (`test_phase3_chunker.py`).
+
+Pipeline-adapters Phase 4 ✓:
+- [x] `RetrievalStreamStage` protocol; sub-adapters under
+      `adapters/retrieval/streams/`: `vec-cosine`, `fts5-bm25`,
+      `like-tokens`.
+- [x] `hybrid-rrf` refactored to read `config.streams.{name: {adapter,
+      config}}` and instantiate registered streams. Setting a stream to
+      `null` disables it; omitted streams inherit the legacy default.
+- [x] Performance: `hybrid-rrf.search` skips `embed_query` when no dense
+      stream is enabled.
+- [x] `adapter_id` of `hybrid-rrf` digests the stream composition so
+      changing any sub-adapter forces a fresh `adapter_id` (cache /
+      drift hooks pick it up).
+- [x] 12 new unit tests (`test_phase4_retrieval_streams.py`). Total
+      suite: **120 tests, all green**.
+
+Pipeline-adapters Phase 5 (pending — sob demanda):
+- [ ] LLM enricher adapters (`ollama`, `anthropic`, `mlx`, `openai`).
+- [ ] Walker variants (`filesystem`, `nested-git`).
+- [ ] Storage variants (`qdrant`, `pgvector`, `lancedb`).
+- [ ] Retrieval `hybrid-rrf-rerank` (Voyage rerank-2.5 stage hook).
+
 Exit criterion for Phase 0: `stropha search "where is the FSRS calculator"` returns the right file in the top 3 — ✓.
 
 Phase 1 exit criterion is qualitative ("Claude Code uses stropha without being instructed"). The objective floor is: hybrid search returns the right code chunk in the top 3 for symbol+conceptual queries — ✓.

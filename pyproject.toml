@@ -23,6 +23,8 @@ dependencies = [
     "tree-sitter>=0.23",
     "tree-sitter-language-pack>=0.10",
     "mcp>=1.2",
+    # Pipeline & adapters (docs/architecture/stropha-pipeline-adapters.md ADR-002)
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

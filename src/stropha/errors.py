@@ -29,3 +29,15 @@ class StorageError(StrophaError):
 
 class RetrievalError(StrophaError):
     """Failure during query execution."""
+
+
+class PipelineError(StrophaError):
+    """Failure assembling or running the pipeline."""
+
+
+class AdapterError(StrophaError):
+    """Failure registering or invoking an adapter.
+
+    Raised by ``pipeline.registry`` when an unknown adapter is requested or
+    when a registered adapter does not satisfy its stage's contract.
+    """

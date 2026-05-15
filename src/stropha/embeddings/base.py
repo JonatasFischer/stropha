@@ -1,4 +1,12 @@
-"""Embedder protocol — the only contract callers should depend on."""
+"""Legacy embedder protocol.
+
+Kept for back-compat with code (and test stubs) written against the
+v0.1.0 surface. The new pipeline framework consumes the richer
+``stropha.stages.embedder.EmbedderStage`` protocol — a structural
+superset (adds the introspection properties every ``Stage`` requires).
+
+Concrete adapters declared via ``@register_adapter`` always satisfy both.
+"""
 
 from __future__ import annotations
 

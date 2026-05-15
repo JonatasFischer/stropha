@@ -1,9 +1,11 @@
-"""Typer CLI — composition root for Phase 0.
+"""Typer CLI — composition root.
 
 Subcommands:
-- `index` : walk → chunk → embed → store.
-- `search`: embed query → dense top-k.
-- `stats` : print index metadata.
+- ``index``    : walk → chunk → enrich → embed → store (uses pipeline-adapters).
+- ``search``   : embed query → hybrid top-k.
+- ``stats``    : print index metadata.
+- ``pipeline`` : introspect the resolved pipeline (``show``, ``validate``).
+- ``adapters`` : list available adapters per stage.
 """
 
 from __future__ import annotations
@@ -19,8 +21,13 @@ from . import __version__
 from .config import Config
 from .embeddings import build_embedder
 from .errors import StrophaError
-from .ingest.pipeline import IndexPipeline
 from .logging import configure_logging, get_logger
+from .pipeline import (
+    Pipeline,
+    all_adapters,
+    build_stages,
+    load_pipeline_config,
+)
 from .retrieval import SearchEngine
 from .storage import Storage
 
@@ -68,8 +75,18 @@ def index(
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
     ),
+    enricher: str | None = typer.Option(
+        None,
+        "--enricher",
+        help="Override pipeline.enricher.adapter (e.g. `noop`, `hierarchical`).",
+    ),
+    embedder: str | None = typer.Option(
+        None,
+        "--embedder",
+        help="Override pipeline.embedder.adapter (e.g. `local`, `voyage`).",
+    ),
 ) -> None:
-    """Walk one or more repos, chunk every file, embed, and store."""
+    """Walk one or more repos, chunk every file, enrich, embed, and store."""
     cfg = _load_config()
     targets: list[Path] = [p.resolve() for p in (repo or [])]
     if not targets:
@@ -80,6 +97,13 @@ def index(
             console.print(f"[red]Target not a directory:[/red] {t}")
             raise typer.Exit(code=1)
 
+    overrides: dict = {}
+    if enricher:
+        overrides.setdefault("enricher", {})["adapter"] = enricher
+    if embedder:
+        overrides.setdefault("embedder", {})["adapter"] = embedder
+    resolved = load_pipeline_config(overrides=overrides or None)
+
     console.print(
         "[bold]Target"
         + ("s" if len(targets) > 1 else "")
@@ -89,25 +113,34 @@ def index(
     console.print(f"[bold]Index :[/bold] {cfg.resolve_index_path()}")
 
     try:
-        embedder = build_embedder(cfg)
+        built = build_stages(resolved)
     except StrophaError as exc:
-        console.print(f"[red]Embedder error:[/red] {exc}")
+        console.print(f"[red]Pipeline build error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     console.print(
-        f"[bold]Embedder:[/bold] {embedder.model_name} (dim={embedder.dim})"
+        f"[bold]Embedder:[/bold] {built.embedder.adapter_id} "
+        f"(dim={built.embedder.dim})"
     )
+    console.print(f"[bold]Enricher:[/bold] {built.enricher.adapter_id}")
 
     try:
-        with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
-            pipeline = IndexPipeline(
-                storage=storage, embedder=embedder, repos=targets
+        with built.storage as storage:  # type: ignore[union-attr]
+            pipeline = Pipeline(
+                storage=storage,
+                embedder=built.embedder,
+                enricher=built.enricher,
+                walker=built.walker,
+                chunker=built.chunker,
+                repos=targets,
             )
             stats = pipeline.run(rebuild=rebuild)
         console.print(
             f"[green]Done.[/green] {stats.files_visited} files · "
             f"{stats.chunks_seen} chunks · "
             f"{stats.chunks_embedded} embedded · "
-            f"{stats.chunks_skipped_fresh} reused "
+            f"{stats.chunks_skipped_fresh} reused · "
+            f"{stats.chunks_enriched_from_cache} enrich-cache hits · "
+            f"{stats.chunks_enriched_fresh} enrich-fresh "
             f"across {len(stats.repos)} repo"
             + ("s" if len(stats.repos) != 1 else "")
         )
@@ -116,10 +149,6 @@ def index(
                 f"  [dim]·[/dim] {r.normalized_key}"
                 + (f"  ([blue]{r.url}[/blue])" if r.url else "")
                 + f"  — {r.files_visited} files, {r.chunks_embedded} embedded"
-            )
-        if stats.chunks_backfilled:
-            console.print(
-                f"[dim]Auto-backfilled {stats.chunks_backfilled} legacy chunks.[/dim]"
             )
     except StrophaError as exc:
         console.print(f"[red]Indexing failed:[/red] {exc}")
@@ -134,13 +163,12 @@ def search(
     query: str = typer.Argument(..., help="Natural-language or symbol query."),
     top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=50),
 ) -> None:
-    """Run a Phase 0 dense search and pretty-print results."""
-    cfg = _load_config()
+    """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF)."""
+    resolved = load_pipeline_config()
     try:
-        embedder = build_embedder(cfg)
-        with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
-            engine = SearchEngine(storage, embedder)
-            hits = engine.search(query, top_k=top_k)
+        built = build_stages(resolved)
+        with built.storage:  # type: ignore[union-attr]
+            hits = built.retrieval.search(query, top_k=top_k)
     except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -179,10 +207,10 @@ def search(
 @app.command()
 def stats() -> None:
     """Print index metadata."""
-    cfg = _load_config()
+    resolved = load_pipeline_config()
     try:
-        embedder = build_embedder(cfg)
-        with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
             info = storage.stats()
     except StrophaError as exc:
         console.print(f"[red]Stats failed:[/red] {exc}")
@@ -207,6 +235,15 @@ def stats() -> None:
             "[yellow]Warning:[/yellow] index contains multiple embedding models. "
             "Run `stropha index --rebuild` to normalize."
         )
+    if info.get("enrichers"):
+        enrichers_table = Table(title="Enrichers in index (drift detection)")
+        enrichers_table.add_column("Enricher adapter_id")
+        enrichers_table.add_column("Chunks", justify="right")
+        for e in info["enrichers"]:
+            enrichers_table.add_row(e["enricher_id"], str(e["n"]))
+        console.print(enrichers_table)
+        cache = info.get("enrichment_cache_size", 0)
+        console.print(f"[dim]Enrichment cache rows: {cache}[/dim]")
     if info["repos"]:
         repos_table = Table(title="Repositories in index")
         repos_table.add_column("Repo", overflow="fold")
@@ -226,6 +263,137 @@ def stats() -> None:
                 head,
             )
         console.print(repos_table)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline introspection (Phase 1 — embedder + enricher are adapter-aware;
+# other stages still appear as "legacy" until later phases migrate them).
+# ---------------------------------------------------------------------------
+
+pipeline_app = typer.Typer(
+    name="pipeline",
+    help="Inspect the resolved pipeline composition.",
+    no_args_is_help=True,
+)
+app.add_typer(pipeline_app, name="pipeline")
+
+
+@pipeline_app.command("show")
+def pipeline_show(
+    enricher: str | None = typer.Option(None, "--enricher"),
+    embedder: str | None = typer.Option(None, "--embedder"),
+    no_open: bool = typer.Option(
+        False,
+        "--no-open",
+        help="Do not open the storage backend (skip storage + retrieval probes).",
+    ),
+) -> None:
+    """Print the fully-resolved pipeline composition (YAML + env + CLI)."""
+    overrides: dict = {}
+    if enricher:
+        overrides.setdefault("enricher", {})["adapter"] = enricher
+    if embedder:
+        overrides.setdefault("embedder", {})["adapter"] = embedder
+    resolved = load_pipeline_config(overrides=overrides or None)
+    try:
+        built = build_stages(resolved, open_storage=not no_open)
+    except StrophaError as exc:
+        console.print(f"[red]Build error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Pipeline composition", show_lines=False)
+    table.add_column("Stage", style="cyan")
+    table.add_column("Adapter", style="bold")
+    table.add_column("adapter_id", overflow="fold")
+    table.add_column("Status")
+    table.add_column("Notes", overflow="fold")
+
+    rows: list[tuple[str, object | None]] = [
+        ("walker", built.walker),
+        ("chunker", built.chunker),
+        ("enricher", built.enricher),
+        ("embedder", built.embedder),
+        ("storage", built.storage),
+        ("retrieval", built.retrieval),
+    ]
+    for stage_name, instance in rows:
+        if instance is None:
+            table.add_row(stage_name, "(skipped)", "—", "—", "use without --no-open to probe")
+            continue
+        h = instance.health()  # type: ignore[union-attr]
+        marker = {"ready": "✓", "warning": "⚠", "error": "✗"}.get(h.status, "?")
+        table.add_row(
+            stage_name,
+            instance.adapter_name,  # type: ignore[union-attr]
+            instance.adapter_id,  # type: ignore[union-attr]
+            f"{marker} {h.status}",
+            h.message,
+        )
+    console.print(table)
+    if built.storage is not None:
+        built.storage.close()  # type: ignore[union-attr]
+
+
+@pipeline_app.command("validate")
+def pipeline_validate() -> None:
+    """Run a lightweight health probe on every adapter. Exit non-zero on error."""
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+    except StrophaError as exc:
+        console.print(f"[red]Build error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    worst_status = "ready"
+    for instance in (
+        built.walker,
+        built.chunker,
+        built.enricher,
+        built.embedder,
+        built.storage,
+        built.retrieval,
+    ):
+        if instance is None:
+            continue
+        h = instance.health()
+        marker = {"ready": "✓", "warning": "⚠", "error": "✗"}.get(h.status, "?")
+        console.print(f"  {marker} {instance.stage_name}/{instance.adapter_name}: {h.message}")
+        if h.status == "error":
+            worst_status = "error"
+        elif h.status == "warning" and worst_status == "ready":
+            worst_status = "warning"
+    if built.storage is not None:
+        built.storage.close()
+    raise typer.Exit(code=0 if worst_status != "error" else 1)
+
+
+adapters_app = typer.Typer(
+    name="adapters",
+    help="Enumerate adapters registered for each pipeline stage.",
+    no_args_is_help=True,
+)
+app.add_typer(adapters_app, name="adapters")
+
+
+@adapters_app.command("list")
+def adapters_list(
+    stage: str | None = typer.Option(None, "--stage", help="Filter by stage."),
+) -> None:
+    """List every adapter the registry knows about."""
+    registry = all_adapters()
+    if stage:
+        if stage not in registry:
+            console.print(f"[yellow]No adapters registered for stage {stage!r}.[/yellow]")
+            raise typer.Exit(code=1)
+        registry = {stage: registry[stage]}
+
+    table = Table(title="Available adapters", show_lines=False)
+    table.add_column("Stage", style="cyan")
+    table.add_column("Adapter", style="bold")
+    for s, names in sorted(registry.items()):
+        for n in names:
+            table.add_row(s, n)
+    console.print(table)
 
 
 if __name__ == "__main__":

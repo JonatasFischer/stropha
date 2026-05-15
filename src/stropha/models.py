@@ -17,7 +17,13 @@ class SourceFile(BaseModel):
 
 
 class Chunk(BaseModel):
-    """An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds."""
+    """An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.
+
+    Phase 1 (pipeline-adapters) augments the row with the enricher's output
+    (``embedding_text``) and the adapter id that produced it
+    (``enricher_id``) so the pipeline can detect drift (config change →
+    re-enrich + re-embed automatically, no ``--rebuild`` needed).
+    """
 
     chunk_id: str  # sha256 of (rel_path + start_line + end_line + content_hash)
     rel_path: str
@@ -32,6 +38,13 @@ class Chunk(BaseModel):
     # Embedding metadata is set after the embedder runs.
     embedding_model: str | None = None
     embedding_dim: int | None = None
+    # Enricher metadata is set after the enricher runs (pipeline-adapters Phase 1).
+    embedding_text: str | None = None
+    """Exact text that was fed to the embedder. Equals ``content`` for
+    ``enricher=noop``. Persisted so drift detection can compare against
+    a fresh enricher's output."""
+    enricher_id: str | None = None
+    """``adapter_id`` of the enricher that produced ``embedding_text``."""
 
 
 class RepoRef(BaseModel):

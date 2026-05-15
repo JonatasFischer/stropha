@@ -26,7 +26,11 @@ log = get_logger(__name__)
 
 # v1: initial schema (chunks, vec_chunks, fts_chunks, meta).
 # v2: adds `repos` table and `chunks.repo_id` column for multi-repo support.
-SCHEMA_VERSION = 2
+# v3: pipeline-adapters Phase 1 — `chunks.embedding_text` (what was actually
+#     embedded), `chunks.enricher_id` (which adapter produced it), and the
+#     `enrichments` cache table. Enables drift detection: changing enricher
+#     config triggers re-enrich + re-embed without `--rebuild`.
+SCHEMA_VERSION = 3
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -259,6 +263,29 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo_id);"
         )
 
+        # v3: pipeline-adapters Phase 1.
+        # - chunks.embedding_text  → exact text fed to the embedder
+        # - chunks.enricher_id     → adapter id of the enricher that produced it
+        # - enrichments cache     → reusable (content_hash, adapter_id) → text
+        self._add_column_if_missing("chunks", "embedding_text", "TEXT")
+        self._add_column_if_missing("chunks", "enricher_id", "TEXT")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_enricher ON chunks(enricher_id);"
+        )
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS enrichments (
+                content_hash   TEXT NOT NULL,
+                enricher_id    TEXT NOT NULL,
+                embedding_text TEXT NOT NULL,
+                cached_at      TEXT NOT NULL,
+                PRIMARY KEY (content_hash, enricher_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_enrichments_enricher
+                ON enrichments(enricher_id);
+            """
+        )
+
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
             ("schema_version", str(SCHEMA_VERSION)),
@@ -424,17 +451,56 @@ class Storage:
         chunk_id: str,
         content_hash: str,
         embedding_model: str,
+        enricher_id: str | None = None,
     ) -> bool:
-        """True if a chunk with this id + hash + model already exists."""
+        """True if the stored chunk matches every (hash, model, enricher).
+
+        Per ADR-004 (pipeline-adapters): adapter drift triggers re-processing
+        automatically. Pass ``enricher_id=None`` to preserve the v0.1.0
+        behavior (only hash + model checked) — used by legacy code paths.
+
+        Back-compat: a stored NULL ``enricher_id`` (chunks indexed before
+        schema v3) is treated as equivalent to ``'noop'`` so upgrading from
+        v0.1.0 with the default enricher does NOT cause a full re-embed.
+        """
         row = self._conn.execute(
-            "SELECT content_hash, embedding_model FROM chunks WHERE chunk_id = ?",
+            """SELECT content_hash, embedding_model, enricher_id
+               FROM chunks WHERE chunk_id = ?""",
             (chunk_id,),
         ).fetchone()
         if row is None:
             return False
-        return (
-            row["content_hash"] == content_hash
-            and row["embedding_model"] == embedding_model
+        if row["content_hash"] != content_hash:
+            return False
+        if row["embedding_model"] != embedding_model:
+            return False
+        if enricher_id is not None:
+            stored = row["enricher_id"] or "noop"
+            if stored != enricher_id:
+                return False
+        return True
+
+    # ----- enrichment cache (pipeline-adapters Phase 1) -------------------
+
+    def get_enrichment(self, content_hash: str, enricher_id: str) -> str | None:
+        """Return cached embedding_text for ``(content_hash, enricher_id)`` or None."""
+        row = self._conn.execute(
+            """SELECT embedding_text FROM enrichments
+               WHERE content_hash = ? AND enricher_id = ?""",
+            (content_hash, enricher_id),
+        ).fetchone()
+        return row["embedding_text"] if row else None
+
+    def put_enrichment(
+        self, content_hash: str, enricher_id: str, embedding_text: str
+    ) -> None:
+        """Cache an enrichment result. Safe to call concurrently (UPSERT)."""
+        now = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """INSERT OR REPLACE INTO enrichments
+               (content_hash, enricher_id, embedding_text, cached_at)
+               VALUES (?, ?, ?, ?)""",
+            (content_hash, enricher_id, embedding_text, now),
         )
 
     def delete_by_paths(self, rel_paths: list[str]) -> int:
@@ -462,18 +528,25 @@ class Storage:
         embedding_model: str,
         embedding_dim: int,
         repo_id: int | None = None,
+        embedding_text: str | None = None,
+        enricher_id: str | None = None,
     ) -> int:
         """Insert (or update) a chunk and its vector atomically. Returns rowid.
 
         ``repo_id`` carries the source-repository identity (see ``repos`` table).
-        Optional only for the legacy in-memory codepath; the pipeline always
-        passes it.
+        ``embedding_text`` / ``enricher_id`` (schema v3) record what was
+        actually embedded and by which enricher adapter, enabling drift
+        detection. Both default to None so legacy callers stay compatible —
+        in that case ``embedding_text`` falls back to ``chunk.content``.
         """
         if len(embedding) != self._dim:
             raise StorageError(
                 f"Embedding dim mismatch: got {len(embedding)}, expected {self._dim}"
             )
         now = datetime.now(UTC).isoformat()
+        # Default to source content when caller (e.g. legacy IndexPipeline)
+        # has not gone through an enricher.
+        effective_text = embedding_text if embedding_text is not None else chunk.content
         cur = self._conn.cursor()
         # Try update first to preserve rowid (vec_chunks linkage).
         cur.execute("SELECT id FROM chunks WHERE chunk_id = ?", (chunk.chunk_id,))
@@ -485,14 +558,16 @@ class Storage:
                 UPDATE chunks SET
                     rel_path=?, language=?, kind=?, symbol=?, parent_chunk_id=?,
                     start_line=?, end_line=?, content=?, content_hash=?,
-                    embedding_model=?, embedding_dim=?, indexed_at=?, repo_id=?
+                    embedding_model=?, embedding_dim=?, indexed_at=?, repo_id=?,
+                    embedding_text=?, enricher_id=?
                 WHERE id = ?
                 """,
                 (
                     chunk.rel_path, chunk.language, chunk.kind, chunk.symbol,
                     chunk.parent_chunk_id, chunk.start_line, chunk.end_line,
                     chunk.content, chunk.content_hash, embedding_model,
-                    embedding_dim, now, repo_id, rowid,
+                    embedding_dim, now, repo_id,
+                    effective_text, enricher_id, rowid,
                 ),
             )
             cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
@@ -503,14 +578,16 @@ class Storage:
                 INSERT INTO chunks (
                     chunk_id, rel_path, language, kind, symbol, parent_chunk_id,
                     start_line, end_line, content, content_hash,
-                    embedding_model, embedding_dim, indexed_at, repo_id
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    embedding_model, embedding_dim, indexed_at, repo_id,
+                    embedding_text, enricher_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     chunk.chunk_id, chunk.rel_path, chunk.language, chunk.kind,
                     chunk.symbol, chunk.parent_chunk_id, chunk.start_line,
                     chunk.end_line, chunk.content, chunk.content_hash,
                     embedding_model, embedding_dim, now, repo_id,
+                    effective_text, enricher_id,
                 ),
             )
             rowid = int(cur.lastrowid or 0)
@@ -772,6 +849,18 @@ class Storage:
                    FROM chunks GROUP BY embedding_model, embedding_dim"""
             ).fetchall()
         ]
+        # Per-enricher chunk distribution (schema v3). NULL = legacy / noop.
+        enrichers = [
+            dict(row)
+            for row in cur.execute(
+                """SELECT COALESCE(enricher_id, '(none)') AS enricher_id,
+                          COUNT(*) AS n
+                   FROM chunks GROUP BY enricher_id"""
+            ).fetchall()
+        ]
+        enrichment_cache = cur.execute(
+            "SELECT COUNT(*) AS n FROM enrichments"
+        ).fetchone()["n"]
         size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
         repos = [r.model_dump() for r in self.list_repos()]
         return {
@@ -781,6 +870,8 @@ class Storage:
             "files": int(files),
             "index_dim": self._dim,
             "models": models,
+            "enrichers": enrichers,
+            "enrichment_cache_size": int(enrichment_cache),
             "repos": repos,
         }
 
