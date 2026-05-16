@@ -425,7 +425,7 @@ Incremental indexing (Phase A/B/C):
 
 #### Retrieval Quality Roadmap (State-of-the-Art)
 
-Current benchmark (mimoria golden set): symbol-lookup 100%, conceptual 33%, multi-hop 50%, natural-language 0%.
+Current benchmark (mimoria golden set, 43 queries): symbol-lookup 80%, conceptual 80%, multi-hop 20% (needs graph), natural-language 20%, compound 100%.
 
 **Priority 1 — Query Intelligence (highest ROI, ~3 days total):**
 
