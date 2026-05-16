@@ -17,17 +17,17 @@ launch automatically when configured via `.mcp.json`.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config
+from .config import Config, get_config, get_config_info
 from .embeddings import build_embedder
 from .embeddings.base import Embedder
 from .errors import StrophaError
@@ -75,8 +75,9 @@ class AppContext:
 
 @asynccontextmanager
 async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
-    load_dotenv()
-    cfg = Config()  # type: ignore[call-arg]
+    # Use the centralized config singleton. It handles .env loading with proper
+    # precedence (env vars from MCP client override .env file values).
+    cfg = get_config()
     configure_logging(cfg.log_level)
     log.info(
         "mcp.startup",
@@ -517,13 +518,46 @@ def trace_feature(
     )
 
 
+@mcp.tool(
+    name="get_config",
+    description=(
+        "Show the active stropha configuration: index path, target repo, "
+        "embedding model, and environment sources. Use this to debug which "
+        "database the MCP server is using and where the config values came from."
+    ),
+)
+def get_config_tool(*, ctx: Context) -> dict:
+    """Return the active configuration for debugging."""
+    app = _ctx(ctx)
+    stats = app.storage.stats()
+    
+    # Get the centralized config info
+    info = get_config_info()
+    
+    # Add runtime stats from the active storage/embedder
+    info["embedder"] = {
+        "model": app.embedder.model_name,
+        "dim": app.embedder.dim,
+    }
+    info["index_stats"] = {
+        "total_chunks": stats.get("chunks", 0),
+        "total_files": stats.get("files", 0),
+        "repos": [
+            {"name": r.get("normalized_key"), "chunks": r.get("chunks")}
+            for r in stats.get("repos", [])
+        ],
+    }
+    
+    return info
+
+
 @mcp.resource("stropha://stats")
 def index_stats_resource() -> StatsPayload:
     """Index statistics. Exposed as both a Tool and a Resource for discovery."""
     # FastMCP resources cannot use the lifespan context directly today, so we
-    # re-derive what we need from Config + a short-lived Storage handle. This
-    # is fine because the resource is read-only and called rarely.
-    cfg = Config()  # type: ignore[call-arg]
+    # re-derive what we need from the config singleton + a short-lived Storage
+    # handle. This is fine because the resource is read-only and called rarely.
+    cfg = get_config()
     embedder = build_embedder(cfg)
     with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
         info = storage.stats()

@@ -5,7 +5,7 @@ Operational guide for LLM coding agents (Claude Code, OpenCode, etc.) working on
 ## How to resume (start here in a new session)
 
 1. **Read this file end-to-end.** It is the live state. Sections §2 (snapshot) and §3 (invariants) are reference; the chronological history at §6 is for "why is this here?" questions.
-2. **Use the graph before grep.** `graphify-out/GRAPH_REPORT.md` has the god nodes; `graphify query "<question>"` traverses the EXTRACTED + INFERRED edges. The MCP server `stropha_rag` exposes 10 tools (see §2.2) for symbol / structural queries.
+2. **Use the graph before grep.** `graphify-out/GRAPH_REPORT.md` has the god nodes; `graphify query "<question>"` traverses the EXTRACTED + INFERRED edges. The MCP server `stropha_rag` exposes 11 tools (see §2.2) for symbol / structural queries.
 3. **Use the RAG before reading files.** The MCP tools `mcp_Stropha_search_code`, `mcp_Stropha_get_symbol`, `mcp_Stropha_get_file_outline` answer 90% of "where is X?" questions cheaper than a `Read`.
 4. **The hook auto-refreshes on commit.** `.git/hooks/post-commit` v=3 runs `graphify update` → `stropha index` in detached background after every commit. Do NOT manually run `stropha index` unless you are debugging the hook itself. Logs: `~/.cache/stropha-hook.log`.
 5. **Before editing code, check §3 invariants.** Drift detection, schema migration discipline, and the local-only policy are non-negotiable.
@@ -38,7 +38,7 @@ The original development target is the sibling **Mimoria** repository at `../mim
 
 All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREATE TABLE IF NOT EXISTS`). Legacy NULL `enricher_id` is treated as `'noop'` so v1/v2 dbs upgrade without full re-embed.
 
-### 2.2 MCP tools (10) — server name `stropha_rag`
+### 2.2 MCP tools (11) — server name `stropha_rag`
 
 | Tool | Purpose | Graph required |
 |---|---|---|
@@ -46,6 +46,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 | `get_symbol` | Exact symbol lookup, cheaper than `search_code` when name is known | no |
 | `get_file_outline` | Symbolic outline of one file — plan a `Read` before consuming a whole file | no |
 | `list_repos` | Enumerate repos present in the index | no |
+| `get_config` | Show active configuration (index path, target repo, embedding model, env sources) — debug tool | no |
 | `find_callers` | Who calls `symbol`? BFS up `calls` edges, EXTRACTED only by default | yes |
 | `find_tests_for` | Tests covering `symbol`. Path-pattern filter (`test_*`, `*.spec.*`, …) overrideable | yes |
 | `find_related` | Symmetric BFS over any edge type (optional `relations` filter) | yes |
@@ -389,7 +390,7 @@ Incremental indexing (Phase A/B/C):
 - [x] **GraphifyLoader diff-load** — deltas only, not full DELETE+INSERT.
 
 **Total suite: 383 tests, all green. 5 enrichers, 4 retrieval streams,
-4 walkers, 3 embedders, 10 MCP tools, 8 CLI commands.**
+4 walkers, 3 embedders, 11 MCP tools, 8 CLI commands.**
 
 ### Exit criteria status
 
@@ -454,7 +455,7 @@ Grouped by concern. Mirrors the actual filesystem layout under `src/stropha/`. T
 | Module | Responsibility |
 |---|---|
 | `cli.py` | Typer composition root — wires every CLI subcommand (`index`, `search`, `stats`, `pipeline`, `adapters`, `eval`, `watch`, `cost`, `hook`). |
-| `server.py` | FastMCP entry (`stropha-mcp`). Registers the 10 MCP tools + the `stropha://stats` resource. Lifespan opens Storage + builds SearchEngine. |
+| `server.py` | FastMCP entry (`stropha-mcp`). Registers the 11 MCP tools + the `stropha://stats` resource. Lifespan opens Storage + builds SearchEngine. |
 | `config.py` | Pydantic settings; legacy env-var aliases routed to the pipeline config tree. |
 | `errors.py` | `StrophaError` hierarchy — every operational path raises a subclass. |
 | `logging.py` | `structlog` config. JSON logs in non-TTY contexts. |

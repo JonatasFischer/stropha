@@ -13,12 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
-from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .config import Config
+from .config import Config, get_config
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
 from .pipeline import (
@@ -28,7 +27,8 @@ from .pipeline import (
     load_pipeline_config,
 )
 
-load_dotenv()
+# Note: We don't call load_dotenv() here anymore. The get_config() singleton
+# handles .env loading with proper precedence (env vars > .env file).
 app = typer.Typer(
     name="stropha",
     help="stropha — index a codebase and serve it to LLM clients via MCP.",
@@ -40,8 +40,9 @@ log = get_logger(__name__)
 
 
 def _load_config() -> Config:
+    """Get the singleton config instance."""
     try:
-        return Config()  # type: ignore[call-arg]
+        return get_config()
     except Exception as exc:
         raise typer.BadParameter(f"Config error: {exc}") from exc
 
