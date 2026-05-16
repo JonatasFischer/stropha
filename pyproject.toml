@@ -43,6 +43,13 @@ dev = [
 mlx = [
     "mlx-lm>=0.18; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
+# Apple Silicon GPU-accelerated embeddings via mlx-embedding-models.
+# ~3-5x faster than fastembed ONNX. Apple Silicon only.
+# Pin transformers<5.0 due to API changes (batch_encode_plus removed in v5).
+mlx-embed = [
+    "mlx-embedding-models>=0.0.11; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "transformers>=4.36,<5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
 
 [build-system]
 requires = ["hatchling"]

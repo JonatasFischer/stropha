@@ -25,9 +25,9 @@ Example:
 
         def submit_answer(self, exercise_id: ExerciseId, answer: Answer): ...
 
-Environment variables:
-    STROPHA_CONTEXTUAL_ENABLED: Enable contextual enrichment (default: 0)
-    STROPHA_CONTEXTUAL_MODEL: Ollama model to use (default: qwen2.5-coder:1.5b)
+Backend selection (automatic):
+- MLX (Apple Silicon): fastest, no daemon needed
+- Ollama: cross-platform fallback
 
 Failure semantics: Any error falls back to raw content (same as ollama enricher).
 The index keeps building; warnings appear in logs.
@@ -36,10 +36,6 @@ The index keeps building; warnings appear in logs.
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 from pydantic import BaseModel, Field
 
@@ -70,14 +66,6 @@ _CONTEXT_PREFIX = "[Context: {description}]\n\n"
 
 
 class ContextualEnricherConfig(BaseModel):
-    base_url: str = Field(
-        default="http://localhost:11434",
-        description="Ollama HTTP endpoint. `OLLAMA_HOST` env var overrides.",
-    )
-    model: str = Field(
-        default="qwen2.5-coder:1.5b",
-        description="Ollama model tag. Larger models (7b+) produce better context.",
-    )
     prompt_template: str = Field(
         default=_DEFAULT_PROMPT,
         description=(
@@ -97,11 +85,11 @@ class ContextualEnricherConfig(BaseModel):
         le=2.0,
         description="LLM temperature. 0 for deterministic output.",
     )
-    timeout_s: float = Field(
-        default=20.0,
-        ge=1.0,
-        le=120.0,
-        description="Per-call timeout. Falls back to raw content on timeout.",
+    max_tokens: int = Field(
+        default=256,
+        ge=64,
+        le=1024,
+        description="Max tokens for the generated description.",
     )
     max_description_chars: int = Field(
         default=500,
@@ -119,20 +107,13 @@ class ContextualEnricher(EnricherStage):
     embedding quality. The description provides semantic context that
     helps the embedding model understand the chunk's role in the codebase.
 
-    Uses the same Ollama HTTP API as the `ollama` enricher but with a
-    different prompt focused on context rather than summary.
+    Uses the unified inference backend (MLX on Apple Silicon, Ollama fallback).
     """
 
     Config = ContextualEnricherConfig
 
     def __init__(self, config: ContextualEnricherConfig | None = None) -> None:
         self._config = config or ContextualEnricherConfig()
-        # Override base_url from env if set
-        ollama_host = os.environ.get("OLLAMA_HOST")
-        if ollama_host:
-            self._config = ContextualEnricherConfig(
-                **{**self._config.model_dump(), "base_url": ollama_host}
-            )
 
     @property
     def stage_name(self) -> str:
@@ -149,7 +130,7 @@ class ContextualEnricher(EnricherStage):
             self._config.prompt_template.encode()
         ).hexdigest()[:8]
         return (
-            f"contextual:{self._config.model}"
+            f"contextual"
             f":t={self._config.temperature}"
             f":p={prompt_hash}"
         )
@@ -159,38 +140,20 @@ class ContextualEnricher(EnricherStage):
         return ContextualEnricherConfig
 
     def health(self) -> StageHealth:
-        """Probe Ollama to confirm daemon and model availability."""
-        try:
-            req = urllib_request.Request(
-                f"{self._config.base_url.rstrip('/')}/api/tags",
-                method="GET",
-            )
-            with urllib_request.urlopen(req, timeout=2.0) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except (urllib_error.URLError, OSError, json.JSONDecodeError) as exc:
+        """Check inference backend availability."""
+        from ...inference import get_backend
+
+        backend = get_backend()
+        is_healthy, message = backend.health_check()
+
+        if is_healthy:
             return StageHealth(
-                status="warning",
-                message=(
-                    f"Ollama unreachable at {self._config.base_url} ({exc!s}). "
-                    f"Run `ollama serve` and `ollama pull {self._config.model}`."
-                ),
-            )
-        models = {m.get("name") for m in payload.get("models") or []}
-        if self._config.model not in models:
-            return StageHealth(
-                status="warning",
-                message=(
-                    f"Model {self._config.model!r} not pulled. "
-                    f"Run `ollama pull {self._config.model}`. "
-                    f"Available: {sorted(models)[:5]}"
-                ),
+                status="ready",
+                message=f"contextual enricher using {backend.name} backend",
             )
         return StageHealth(
-            status="ready",
-            message=(
-                f"contextual enricher @ {self._config.base_url} "
-                f"model={self._config.model}"
-            ),
+            status="warning",
+            message=f"Inference backend issue: {message}",
         )
 
     def enrich(self, chunk: Chunk, ctx: StageContext) -> str:
@@ -207,8 +170,9 @@ class ContextualEnricher(EnricherStage):
         return f"{prefix}{chunk.content}"
 
     def _generate_context(self, chunk: Chunk) -> str | None:
-        """Call Ollama to generate contextual description.
+        """Generate contextual description using the inference backend.
 
+        Uses MLX on Apple Silicon, falls back to Ollama on other platforms.
         Returns None on any failure (graceful).
         """
         # Build prompt with chunk metadata
@@ -220,35 +184,15 @@ class ContextualEnricher(EnricherStage):
             symbol=chunk.symbol or "(anonymous)",
         )
 
-        body = json.dumps(
-            {
-                "model": self._config.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": self._config.temperature},
-            }
-        ).encode("utf-8")
+        # Use unified inference backend
+        from ...inference import generate
 
-        try:
-            req = urllib_request.Request(
-                f"{self._config.base_url.rstrip('/')}/api/generate",
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib_request.urlopen(
-                req, timeout=self._config.timeout_s
-            ) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except (
-            urllib_error.URLError,
-            OSError,
-            json.JSONDecodeError,
-            TimeoutError,
-        ):
-            return None
+        text = generate(
+            prompt,
+            max_tokens=self._config.max_tokens,
+            temperature=self._config.temperature,
+        )
 
-        text = (payload.get("response") or "").strip()
         if not text:
             return None
 

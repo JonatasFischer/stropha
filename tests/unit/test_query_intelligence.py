@@ -27,38 +27,29 @@ class TestHyDE:
             assert maybe_hyde_rewrite("") is None
             assert maybe_hyde_rewrite("   ") is None
 
-    @patch("stropha.retrieval.hyde.urllib_request.urlopen")
-    def test_hyde_calls_ollama(self, mock_urlopen: MagicMock) -> None:
-        """HyDE should call Ollama API when enabled."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "def calculate_sum(a, b): return a + b"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+    @patch("stropha.inference.generate")
+    def test_hyde_calls_inference_backend(self, mock_gen: MagicMock) -> None:
+        """HyDE should call inference backend when enabled."""
+        mock_gen.return_value = "def calculate_sum(a, b): return a + b"
 
         with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
             result = maybe_hyde_rewrite("how to add two numbers")
             assert result is not None
             assert "calculate_sum" in result or "return" in result
 
-    @patch("stropha.retrieval.hyde.urllib_request.urlopen")
-    def test_hyde_handles_ollama_failure(self, mock_urlopen: MagicMock) -> None:
-        """HyDE should return None when Ollama fails."""
-        from urllib.error import URLError
-        mock_urlopen.side_effect = URLError("Connection refused")
+    @patch("stropha.inference.generate")
+    def test_hyde_handles_inference_failure(self, mock_gen: MagicMock) -> None:
+        """HyDE should return None when inference fails."""
+        mock_gen.return_value = None  # Simulate failure
 
         with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
             result = maybe_hyde_rewrite("test query")
             assert result is None
 
-    @patch("stropha.retrieval.hyde.urllib_request.urlopen")
-    def test_hyde_handles_empty_response(self, mock_urlopen: MagicMock) -> None:
-        """HyDE should return None when Ollama returns empty."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": ""}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+    @patch("stropha.inference.generate")
+    def test_hyde_handles_empty_response(self, mock_gen: MagicMock) -> None:
+        """HyDE should return None when inference returns empty."""
+        mock_gen.return_value = ""
 
         with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
             result = maybe_hyde_rewrite("test query")
@@ -81,14 +72,10 @@ class TestQueryRewrite:
             assert maybe_rewrite_query("") is None
             assert maybe_rewrite_query("   ") is None
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
-    def test_rewrite_calls_ollama(self, mock_urlopen: MagicMock) -> None:
-        """Query rewriting should call Ollama API when enabled."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "FSRS calculator test FsrsCalculatorTest"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+    @patch("stropha.inference.generate")
+    def test_rewrite_calls_inference_backend(self, mock_gen: MagicMock) -> None:
+        """Query rewriting should call inference backend when enabled."""
+        mock_gen.return_value = "FSRS calculator test FsrsCalculatorTest"
 
         with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
             result = maybe_rewrite_query("onde tem teste pra fsrs")
@@ -96,14 +83,10 @@ class TestQueryRewrite:
             # Should contain original query + rewritten terms
             assert "fsrs" in result.lower()
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
-    def test_rewrite_combines_original_and_expanded(self, mock_urlopen: MagicMock) -> None:
+    @patch("stropha.inference.generate")
+    def test_rewrite_combines_original_and_expanded(self, mock_gen: MagicMock) -> None:
         """Query rewriting should combine original query with expanded terms."""
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "authentication login security"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = "authentication login security"
 
         with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
             result = maybe_rewrite_query("how does auth work")
@@ -112,25 +95,20 @@ class TestQueryRewrite:
             assert "how does auth work" in result
             assert "authentication" in result
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
-    def test_rewrite_handles_ollama_failure(self, mock_urlopen: MagicMock) -> None:
-        """Query rewriting should return None when Ollama fails."""
-        from urllib.error import URLError
-        mock_urlopen.side_effect = URLError("Connection refused")
+    @patch("stropha.inference.generate")
+    def test_rewrite_handles_inference_failure(self, mock_gen: MagicMock) -> None:
+        """Query rewriting should return None when inference fails."""
+        mock_gen.return_value = None  # Simulate failure
 
         with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
             result = maybe_rewrite_query("test query")
             assert result is None
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
-    def test_rewrite_truncates_long_output(self, mock_urlopen: MagicMock) -> None:
+    @patch("stropha.inference.generate")
+    def test_rewrite_truncates_long_output(self, mock_gen: MagicMock) -> None:
         """Query rewriting should truncate very long outputs."""
         long_response = "term " * 200  # 1000 chars
-        mock_response = MagicMock()
-        mock_response.read.return_value = f'{{"response": "{long_response}"}}'.encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = long_response
 
         with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
             result = maybe_rewrite_query("short query")
@@ -245,19 +223,14 @@ class TestHybridRrfSearchIntegration:
 
         return _RecordingEmbedder()
 
-    @patch("stropha.retrieval.hyde.urllib_request.urlopen")
+    @patch("stropha.inference.generate")
     def test_search_uses_hyde_when_config_enabled(
-        self, mock_urlopen: MagicMock, recording_storage, recording_embedder
+        self, mock_gen: MagicMock, recording_storage, recording_embedder
     ) -> None:
         """When hyde_enabled=True, search should use HyDE-rewritten query for embedding."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         
-        # Setup mock Ollama response
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "def hypothetical_code(): pass"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = "def hypothetical_code(): pass"
 
         config = HybridRrfConfig(hyde_enabled=True)
         retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
@@ -268,18 +241,14 @@ class TestHybridRrfSearchIntegration:
         assert len(recording_embedder.query_texts) == 1
         assert "hypothetical_code" in recording_embedder.query_texts[0]
 
-    @patch("stropha.retrieval.hyde.urllib_request.urlopen")
+    @patch("stropha.inference.generate")
     def test_search_uses_hyde_when_env_enabled(
-        self, mock_urlopen: MagicMock, recording_storage, recording_embedder
+        self, mock_gen: MagicMock, recording_storage, recording_embedder
     ) -> None:
         """When STROPHA_HYDE_ENABLED=1, search should use HyDE even without config flag."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "class AuthService: pass"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = "class AuthService: pass"
 
         with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
             config = HybridRrfConfig()  # hyde_enabled defaults to False
@@ -290,18 +259,14 @@ class TestHybridRrfSearchIntegration:
             assert len(recording_embedder.query_texts) == 1
             assert "AuthService" in recording_embedder.query_texts[0]
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
+    @patch("stropha.inference.generate")
     def test_search_uses_query_rewrite_when_config_enabled(
-        self, mock_urlopen: MagicMock, recording_storage, recording_embedder
+        self, mock_gen: MagicMock, recording_storage, recording_embedder
     ) -> None:
         """When query_rewrite_enabled=True, search should use rewritten query for all streams."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "FSRS calculator FsrsCalculator test"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = "FSRS calculator FsrsCalculator test"
 
         config = HybridRrfConfig(query_rewrite_enabled=True)
         retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
@@ -315,18 +280,14 @@ class TestHybridRrfSearchIntegration:
         assert "fsrs" in bm25_query.lower()
         assert "FSRS" in bm25_query or "FsrsCalculator" in bm25_query
 
-    @patch("stropha.retrieval.query_rewrite.urllib_request.urlopen")
+    @patch("stropha.inference.generate")
     def test_search_uses_query_rewrite_when_env_enabled(
-        self, mock_urlopen: MagicMock, recording_storage, recording_embedder
+        self, mock_gen: MagicMock, recording_storage, recording_embedder
     ) -> None:
         """When STROPHA_QUERY_REWRITE_ENABLED=1, search should use rewriting."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "mastery streak transition"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_gen.return_value = "mastery streak transition"
 
         with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
             config = HybridRrfConfig()  # query_rewrite_enabled defaults to False
@@ -345,8 +306,7 @@ class TestHybridRrfSearchIntegration:
         """When both enabled, HyDE affects dense embedding, query rewrite affects all streams."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         
-        # Since both modules use urllib_request.urlopen, we need to mock at a higher level.
-        # We'll use separate patches for each module's function directly.
+        # Mock both functions directly since they both use the inference backend
         with patch("stropha.retrieval.query_rewrite.maybe_rewrite_query") as mock_rewrite, \
              patch("stropha.retrieval.hyde.maybe_hyde_rewrite") as mock_hyde:
             
@@ -386,10 +346,9 @@ class TestHybridRrfSearchIntegration:
     ) -> None:
         """When HyDE fails, search should fall back to original query."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        from urllib.error import URLError
         
-        with patch("stropha.retrieval.hyde.urllib_request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = URLError("Connection refused")
+        with patch("stropha.inference.generate") as mock_gen:
+            mock_gen.return_value = None  # Simulate failure
             
             config = HybridRrfConfig(hyde_enabled=True)
             retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
@@ -405,10 +364,9 @@ class TestHybridRrfSearchIntegration:
     ) -> None:
         """When query rewrite fails, search should fall back to original query."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        from urllib.error import URLError
         
-        with patch("stropha.retrieval.query_rewrite.urllib_request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = URLError("Connection refused")
+        with patch("stropha.inference.generate") as mock_gen:
+            mock_gen.return_value = None  # Simulate failure
             
             config = HybridRrfConfig(query_rewrite_enabled=True)
             retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)

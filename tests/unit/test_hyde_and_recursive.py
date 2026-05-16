@@ -7,8 +7,6 @@ on failures, and the merge semantics for adjacency / parent.
 
 from __future__ import annotations
 
-import io
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,14 +22,6 @@ from stropha.retrieval.recursive import (
 from stropha.storage import Storage
 
 
-def _fake_response(payload: dict) -> io.BytesIO:
-    body = json.dumps(payload).encode("utf-8")
-    bio = io.BytesIO(body)
-    bio.__enter__ = lambda self=bio: self
-    bio.__exit__ = lambda self=bio, *args: False
-    return bio
-
-
 # --------------------------------------------------------------------------- HyDE
 
 
@@ -42,28 +32,24 @@ def test_hyde_disabled_by_default(monkeypatch) -> None:
 
 def test_hyde_returns_text_when_enabled(monkeypatch) -> None:
     monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
-    with patch("stropha.retrieval.hyde.urllib_request.urlopen") as mock_open:
-        mock_open.return_value = _fake_response(
-            {"response": "def login(user, password): ..."}
-        )
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = "def login(user, password): ..."
         out = maybe_hyde_rewrite("how does login work")
     assert out is not None
     assert "def login" in out
 
 
 def test_hyde_fallback_on_http_error(monkeypatch) -> None:
-    from urllib.error import URLError
-
     monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
-    with patch("stropha.retrieval.hyde.urllib_request.urlopen") as mock_open:
-        mock_open.side_effect = URLError("connection refused")
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = None  # Simulate failure
         assert maybe_hyde_rewrite("how does login work") is None
 
 
 def test_hyde_fallback_on_empty_response(monkeypatch) -> None:
     monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
-    with patch("stropha.retrieval.hyde.urllib_request.urlopen") as mock_open:
-        mock_open.return_value = _fake_response({"response": "   "})
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = ""  # Empty string triggers fallback
         assert maybe_hyde_rewrite("q") is None
 
 
@@ -76,8 +62,8 @@ def test_hyde_empty_query_short_circuits(monkeypatch) -> None:
 def test_hyde_caps_long_output(monkeypatch) -> None:
     monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
     long = "x" * 5000
-    with patch("stropha.retrieval.hyde.urllib_request.urlopen") as mock_open:
-        mock_open.return_value = _fake_response({"response": long})
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = long
         out = maybe_hyde_rewrite("q")
     assert out is not None
     assert len(out) <= 2000

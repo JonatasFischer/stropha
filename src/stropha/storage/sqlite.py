@@ -1092,6 +1092,9 @@ class Storage:
 
         Preserves the ``repos`` table — repository identity survives rebuilds
         so the same id is reused, keeping FK semantics meaningful across runs.
+
+        Also clears the ``files`` table so incremental indexing sees all files
+        as dirty after a rebuild.
         """
         cur = self._conn.cursor()
         cur.executescript(
@@ -1099,6 +1102,8 @@ class Storage:
             DELETE FROM vec_chunks;
             DELETE FROM fts_chunks;
             DELETE FROM chunks;
+            DELETE FROM files;
+            DELETE FROM enrichments;
             """
         )
         self._conn.commit()

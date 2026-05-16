@@ -260,7 +260,13 @@ class GraphifyLoader:
         #
         # Multi-repo mode: scope all queries by repo_id so loading one
         # repo's graph doesn't touch another repo's data.
-        cur.execute("BEGIN IMMEDIATE")
+        #
+        # Only start a new transaction if we're not already in one.
+        # The pipeline may call us after committing, or an outer caller
+        # may have an open transaction we should join.
+        own_transaction = not self._storage._conn.in_transaction
+        if own_transaction:
+            cur.execute("BEGIN IMMEDIATE")
         try:
             # ---- nodes diff ---------------------------------------------
             # Build incoming rows with prefixed node_id and repo_id column
@@ -421,9 +427,11 @@ class GraphifyLoader:
                     "INSERT OR REPLACE INTO graph_meta(key, value) VALUES(?, ?)",
                     (k, v),
                 )
-            self._storage.commit()
+            if own_transaction:
+                self._storage.commit()
         except Exception:
-            self._storage._conn.rollback()
+            if own_transaction:
+                self._storage._conn.rollback()
             raise
 
         duration_ms = int(

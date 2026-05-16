@@ -14,10 +14,13 @@ about the same concept:
        3. "user credentials token JWT verification"
     → Search each, RRF fuse
 
-Local implementation: route through Ollama (same as HyDE/query_rewrite).
+Backend selection (automatic):
+- MLX (Apple Silicon): fastest, no daemon needed
+- Ollama: cross-platform fallback
+
 Falls back to single-query search when:
-- Ollama is unreachable
-- HTTP call times out
+- No inference backend available
+- Generation times out
 - Generated paraphrases are empty
 - STROPHA_MULTI_QUERY_ENABLED is unset / "0"
 
@@ -35,11 +38,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-from functools import lru_cache
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 from ..logging import get_logger
 
@@ -62,14 +61,6 @@ def _enabled() -> bool:
     return os.environ.get("STROPHA_MULTI_QUERY_ENABLED", "0") == "1"
 
 
-def _ollama_url() -> str:
-    return os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-
-
-def _ollama_model() -> str:
-    return os.environ.get("STROPHA_MULTI_QUERY_MODEL", "qwen2.5-coder:1.5b")
-
-
 def _prompt_template() -> str:
     return os.environ.get("STROPHA_MULTI_QUERY_PROMPT", _DEFAULT_PROMPT)
 
@@ -79,13 +70,6 @@ def _num_paraphrases() -> int:
         return int(os.environ.get("STROPHA_MULTI_QUERY_COUNT", "3"))
     except ValueError:
         return 3
-
-
-def _timeout_s() -> float:
-    try:
-        return float(os.environ.get("STROPHA_MULTI_QUERY_TIMEOUT_S", "8"))
-    except ValueError:
-        return 8.0
 
 
 def _cache_key(query: str) -> str:
@@ -119,6 +103,8 @@ def generate_paraphrases(
 ) -> list[str]:
     """Generate paraphrases of the query using an LLM.
 
+    Uses MLX on Apple Silicon, falls back to Ollama on other platforms.
+
     Args:
         query: The user's search query.
         force_enabled: If True, skip the _enabled() check.
@@ -141,31 +127,18 @@ def generate_paraphrases(
 
     n = num_paraphrases or _num_paraphrases()
     prompt = _prompt_template().format(query=query, num_paraphrases=n)
-    body = json.dumps(
-        {
-            "model": _ollama_model(),
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.7},  # Some variety for paraphrases
-        }
-    ).encode("utf-8")
 
-    try:
-        req = urllib_request.Request(
-            f"{_ollama_url()}/api/generate",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib_request.urlopen(req, timeout=_timeout_s()) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib_error.URLError, OSError, json.JSONDecodeError, TimeoutError) as exc:
-        log.info("multi_query.skip_ollama_failure", error=str(exc))
-        return [query]
+    # Use unified inference backend (MLX preferred, Ollama fallback)
+    from ..inference import generate
 
-    text = (payload.get("response") or "").strip()
+    text = generate(
+        prompt,
+        max_tokens=256,
+        temperature=0.7,  # Some variety for paraphrases
+    )
+
     if not text:
-        log.info("multi_query.skip_empty")
+        log.info("multi_query.skip_generation_failed")
         return [query]
 
     # Parse paraphrases (one per line)
