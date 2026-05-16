@@ -589,14 +589,14 @@ splade = [
   - [ ] 5.1.6 On commit, flush overlay to base index
   - [ ] 5.1.7 Integrate with existing stropha watch command
   - [ ] 5.1.8 Write unit tests for overlay storage
-- [ ] 5.2 Architectural anchors detection
-  - [ ] 5.2.1 Create src/stropha/ingest/anchors.py module
-  - [ ] 5.2.2 Define anchor patterns per language (annotations, naming conventions)
-  - [ ] 5.2.3 Detect: aggregate roots, controllers, resolvers, config entry points
-  - [ ] 5.2.4 Add is_architectural_anchor boolean to chunks table
-  - [ ] 5.2.5 Boost anchors in architectural queries ("entry point", "main flow")
-  - [ ] 5.2.6 Expose in MCP: filter by anchor=true
-  - [ ] 5.2.7 Write unit tests for anchor detection
+- [x] 5.2 Architectural anchors detection - CONCLUIDO 2026-05-16
+  - [x] 5.2.1 Create src/stropha/ingest/anchors.py module
+  - [x] 5.2.2 Define anchor patterns per language (annotations, naming conventions)
+  - [x] 5.2.3 Detect: aggregate roots, controllers, resolvers, config entry points
+  - [ ] 5.2.4 Add is_architectural_anchor boolean to chunks table - DEFERRED (use detector at query time)
+  - [ ] 5.2.5 Boost anchors in architectural queries - DEFERRED (detector provides boost values)
+  - [ ] 5.2.6 Expose in MCP: filter by anchor=true - DEFERRED
+  - [x] 5.2.7 Write unit tests for anchor detection (26 tests)
 
 ### Sprint 6 - Semantic Cache & Performance
 - [x] 6.1 Semantic query cache - CONCLUIDO 2026-05-16
@@ -723,4 +723,5 @@ Based on ROI analysis, here's the recommended implementation order:
 | 2026-05-16 | Sprint 7.1 completed - MCP integration guide (docs/guides/mcp-integration.md) |
 | 2026-05-16 | Sprint 4.2 completed - domain glossary with CLI commands + 23 tests |
 | 2026-05-16 | Sprint 7.2+7.3 completed - performance tuning + troubleshooting guides |
+| 2026-05-16 | Sprint 5.2 completed - architectural anchors detection + 26 tests |
 | 2026-05-16 | Comprehensive implementation plan added - Sprints 3-7 with detailed subtasks |
