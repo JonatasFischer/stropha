@@ -415,17 +415,65 @@ Incremental indexing (Phase A/B/C):
 
 ### Pending work (curated, local-only)
 
-> Cloud-only items (Voyage rerank-2.5, Contextual Retrieval, anthropic / openai enrichers, qdrant / pgvector, Web UI, OAuth) are explicitly deferred per the local-only directive.
+> Cloud-only items (Voyage rerank-2.5, anthropic / openai enrichers, qdrant / pgvector, Web UI, OAuth) are explicitly deferred per the local-only directive.
+
+#### Retrieval Quality Roadmap (State-of-the-Art)
+
+Current benchmark (mimoria golden set): symbol-lookup 100%, conceptual 33%, multi-hop 50%, natural-language 0%.
+
+**Priority 1 — Query Intelligence (highest ROI, ~3 days total):**
+
+| Feature | Effort | Expected Gain | Status |
+|---------|--------|---------------|--------|
+| Query routing to graph tools | 2d | +40% multi-hop | pending |
+| Query decomposition + sub-query fusion | 1d | +25% natural-language | pending |
+
+Query routing classifies intent ("what calls X" → `find_callers`, "tests for X" → `find_tests_for`) and dispatches to the appropriate tool. Query decomposition splits complex queries into atomic sub-queries, retrieves each, and fuses via RRF.
+
+**Priority 2 — Contextual Retrieval (Anthropic method, ~3 days):**
+
+| Feature | Effort | Expected Gain | Status |
+|---------|--------|---------------|--------|
+| Contextual enricher (full implementation) | 3d | +25% conceptual | scaffolded |
+
+Prepend LLM-generated context to each chunk before embedding. The context describes what the chunk does and how it fits in the file. Generated once at index time, stored in `embedding_text`. Anthropic reported 49% reduction in retrieval failures.
+
+**Priority 3 — HyDE Improvements (~1 day):**
+
+| Feature | Effort | Expected Gain | Status |
+|---------|--------|---------------|--------|
+| Code-tuned HyDE prompts | 0.5d | +15% conceptual | pending |
+| Larger model support (deepseek-coder-v2, codestral) | 0.5d | +10% conceptual | pending |
+
+Current HyDE uses generic prompts. Code queries need code-shaped hypothetical documents with proper prompt engineering.
+
+**Priority 4 — Late Chunking (~1 week):**
+
+| Feature | Effort | Expected Gain | Status |
+|---------|--------|---------------|--------|
+| Late chunking with contextual embeddings | 5d | +20% conceptual | pending |
+
+Jina AI's technique: embed the full document first, then pool token embeddings per chunk boundary. Each chunk embedding retains awareness of siblings. Requires long-context embedder (jina-embeddings-v3, 8K tokens).
+
+**Priority 5 — Advanced Retrieval (~2 weeks):**
+
+| Feature | Effort | Expected Gain | Status |
+|---------|--------|---------------|--------|
+| ColBERT late interaction | 10d | +20% all queries | pending |
+| SPLADE learned sparse retrieval | 5d | +12% conceptual | pending |
+
+ColBERT stores per-token embeddings, computes MaxSim at query time. SPLADE produces sparse vectors with learned term expansion. Both require new retrieval infrastructure.
+
+#### Infrastructure & Tooling
 
 **High ROI, small effort:**
-- Glossário de domínio embeddado (~0.5d) — new table `glossary(term, definition, embedding)` + injection helper in `retrieval/search.py`.
-- Cache semântico de queries (~0.5d) — LRU keyed by `(round(query_vec @ centroid, 2), k)`.
 - E2E test do graph load (~0.5d) — fixture under `tests/eval/` with a real `graphify-out/` snapshot.
+- +30 golden queries for mimoria (~0.5d) — balanced across symbol/conceptual/multi-hop/natural-language.
+- Benchmark harness improvements (~0.5d) — add Precision@K, NDCG, per-query latency tracking.
 
 **Medium effort:**
 - LanceDB storage adapter (~1d) — embedded alternative to sqlite-vec; same `StorageStage` protocol.
 - Indexação on-demand de dependências externas (~1d) — `stropha index --include-deps <name>` walks `node_modules/<name>` / vendored deps.
-- +20 multi-hop golden queries (~0.5d) — "what connects X and Y?", "trace from scenario to method".
 
 **Deferred (infra dependency or out of scope):**
 - OpenTelemetry tracing → Langfuse — needs Jaeger/Langfuse decision; `structlog` + `stropha cost` cover the immediate need.
