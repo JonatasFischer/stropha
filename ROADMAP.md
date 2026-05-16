@@ -580,7 +580,7 @@ splade = [
   - [ ] 4.3.5 Write unit tests for comment extraction
 
 ### Sprint 5 - Polish & UX
-- [ ] 5.1 Soft index overlay (working tree)
+- [ ] 5.1 Soft index overlay (working tree) - DEFERRED (low priority, significant complexity)
   - [ ] 5.1.1 Create src/stropha/storage/overlay.py module
   - [ ] 5.1.2 Implement OverlayStorage wrapping base Storage
   - [ ] 5.1.3 RAM-based overlay for uncommitted changes
@@ -589,6 +589,7 @@ splade = [
   - [ ] 5.1.6 On commit, flush overlay to base index
   - [ ] 5.1.7 Integrate with existing stropha watch command
   - [ ] 5.1.8 Write unit tests for overlay storage
+  - Note: Post-commit hook with incremental indexing covers 95% of the use case
 - [x] 5.2 Architectural anchors detection - CONCLUIDO 2026-05-16
   - [x] 5.2.1 Create src/stropha/ingest/anchors.py module
   - [x] 5.2.2 Define anchor patterns per language (annotations, naming conventions)
