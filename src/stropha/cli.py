@@ -866,5 +866,185 @@ def hook_status_cmd(
     raise typer.Exit(code=0 if s.installed else 1)
 
 
+# ============================================================================ #
+#                           GLOSSARY SUB-APP                                   #
+# ============================================================================ #
+
+glossary_app = typer.Typer(
+    name="glossary",
+    help="Manage domain glossary (term definitions for better conceptual search).",
+    no_args_is_help=True,
+)
+app.add_typer(glossary_app, name="glossary")
+
+
+@glossary_app.command("add")
+def glossary_add_cmd(
+    term: str = typer.Argument(..., help="The term to add."),
+    definition: str = typer.Argument(..., help="Definition of the term."),
+    aliases: list[str] = typer.Option(
+        [], "--alias", "-a",
+        help="Alternate names for the term (can be repeated).",
+    ),
+) -> None:
+    """Add a single term to the glossary."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            entry = loader.add_term(
+                term=term,
+                definition=definition,
+                aliases=aliases if aliases else None,
+                embedder=built.embedder,
+                enricher_id=built.enricher.adapter_id if built.enricher else "noop",
+            )
+            storage._conn.commit()
+            console.print(f"[green]Added:[/green] {entry.term}")
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@glossary_app.command("remove")
+def glossary_remove_cmd(
+    term: str = typer.Argument(..., help="The term to remove."),
+) -> None:
+    """Remove a term from the glossary."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            if loader.remove_term(term):
+                storage._conn.commit()
+                console.print(f"[green]Removed:[/green] {term}")
+            else:
+                console.print(f"[yellow]Not found:[/yellow] {term}")
+                raise typer.Exit(code=1)
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@glossary_app.command("list")
+def glossary_list_cmd() -> None:
+    """List all glossary terms."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            terms = loader.list_terms()
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    
+    if not terms:
+        console.print("[yellow]No glossary terms found.[/yellow]")
+        return
+    
+    table = Table(title=f"Glossary ({len(terms)} terms)", show_lines=False)
+    table.add_column("Term", style="cyan")
+    table.add_column("Definition", overflow="fold")
+    table.add_column("Aliases", overflow="fold", style="dim")
+    
+    for t in terms:
+        aliases = ", ".join(t.get("aliases", [])) or "—"
+        table.add_row(t["term"], t["definition"][:100], aliases)
+    
+    console.print(table)
+
+
+@glossary_app.command("import")
+def glossary_import_cmd(
+    yaml_file: Path = typer.Argument(
+        ...,
+        help="Path to YAML file with glossary terms.",
+        exists=True,
+    ),
+) -> None:
+    """Import glossary terms from a YAML file."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            terms = loader.load_yaml(yaml_file)
+            if not terms:
+                console.print("[yellow]No terms found in file.[/yellow]")
+                return
+            
+            indexed = loader.index_terms(
+                terms,
+                embedder=built.embedder,
+                enricher_id=built.enricher.adapter_id if built.enricher else "noop",
+            )
+            storage._conn.commit()
+            console.print(f"[green]Imported {indexed} terms from {yaml_file}[/green]")
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@glossary_app.command("export")
+def glossary_export_cmd(
+    output: Path = typer.Argument(
+        ...,
+        help="Path to write the YAML file.",
+    ),
+) -> None:
+    """Export glossary terms to a YAML file."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            count = loader.export_yaml(output)
+            if count == 0:
+                console.print("[yellow]No terms to export.[/yellow]")
+            else:
+                console.print(f"[green]Exported {count} terms to {output}[/green]")
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@glossary_app.command("stats")
+def glossary_stats_cmd() -> None:
+    """Show glossary statistics."""
+    from .ingest.glossary import GlossaryLoader
+    
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            loader = GlossaryLoader(storage)
+            stats = loader.stats()
+    except StrophaError as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    
+    table = Table(title="Glossary Statistics", show_lines=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+    
+    table.add_row("Total terms", str(stats.total_terms))
+    table.add_row("Last updated", stats.last_updated or "—")
+    
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

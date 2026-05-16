@@ -48,8 +48,8 @@
 | Contextual enricher | P1 | Medium | High | **Done** |
 | Auto-merging retrieval | P2 | Medium | Medium | **Done** |
 | Recursive --flag | P2 | Small | Medium | **Done** |
+| Domain glossary | P2 | Small | Medium | **Done** |
 | SPLADE stream | P3 | Medium | Low | Deferred |
-| Glossary | P3 | Small | Low | Deferred |
 
 ---
 
@@ -563,15 +563,15 @@ splade = [
   - [x] 4.1.8 Register adapter with @register_adapter(stage="enricher", name="contextual")
   - [x] 4.1.9 Write unit tests (19 tests with mock Ollama responses)
   - [ ] 4.1.10 Benchmark: compare recall with/without contextual enricher (deferred)
-- [ ] 4.2 Domain glossary
-  - [ ] 4.2.1 Schema v8: Add glossary table (term, definition, embedding, repo_id)
-  - [ ] 4.2.2 Create src/stropha/ingest/glossary.py module
-  - [ ] 4.2.3 Support manual glossary via YAML file (stropha-glossary.yaml)
-  - [ ] 4.2.4 Support auto-extraction via LLM (scan code for domain terms)
-  - [ ] 4.2.5 Index glossary terms as special chunks (kind=glossary)
-  - [ ] 4.2.6 Boost glossary matches in conceptual queries
-  - [ ] 4.2.7 CLI: stropha glossary {add,list,import,export}
-  - [ ] 4.2.8 Write unit tests for glossary
+- [x] 4.2 Domain glossary - CONCLUIDO 2026-05-16
+  - [x] 4.2.1 Glossary terms indexed as chunks (kind=glossary) - no schema change needed
+  - [x] 4.2.2 Create src/stropha/ingest/glossary.py module
+  - [x] 4.2.3 Support manual glossary via YAML file (stropha-glossary.yaml)
+  - [ ] 4.2.4 Support auto-extraction via LLM (scan code for domain terms) - DEFERRED
+  - [x] 4.2.5 Index glossary terms as special chunks (kind=glossary)
+  - [x] 4.2.6 Glossary terms searchable via search_code (same as regular chunks)
+  - [x] 4.2.7 CLI: stropha glossary {add,remove,list,import,export,stats}
+  - [x] 4.2.8 Write unit tests for glossary (23 tests)
 - [ ] 4.3 Separate comment indexing
   - [ ] 4.3.1 Extend tree-sitter chunkers to extract docstrings/Javadoc separately
   - [ ] 4.3.2 Create chunks with kind=comment, linked to code chunk
@@ -721,4 +721,5 @@ Based on ROI analysis, here's the recommended implementation order:
 | 2026-05-16 | Sprint 4.1 completed - contextual prefix enricher + 19 tests |
 | 2026-05-16 | Sprint 3.1+3.2 completed - --recursive flag for CLI + MCP search_code |
 | 2026-05-16 | Sprint 7.1 completed - MCP integration guide (docs/guides/mcp-integration.md) |
+| 2026-05-16 | Sprint 4.2 completed - domain glossary with CLI commands + 23 tests |
 | 2026-05-16 | Comprehensive implementation plan added - Sprints 3-7 with detailed subtasks |

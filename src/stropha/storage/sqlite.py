@@ -864,6 +864,45 @@ class Storage:
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
 
+    def chunk_exists(self, chunk_id: str) -> bool:
+        """Check if a chunk with the given ID exists."""
+        row = self._conn.execute(
+            "SELECT 1 FROM chunks WHERE chunk_id = ? LIMIT 1", (chunk_id,)
+        ).fetchone()
+        return row is not None
+
+    def get_chunk_by_id(self, chunk_id: str) -> dict[str, Any] | None:
+        """Get a chunk by its ID.
+        
+        Returns:
+            Dictionary with chunk fields, or None if not found.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def delete_chunk(self, chunk_id: str) -> bool:
+        """Delete a single chunk by its ID.
+        
+        Returns:
+            True if deleted, False if not found.
+        """
+        cur = self._conn.cursor()
+        row = cur.execute(
+            "SELECT id FROM chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        
+        rowid = int(row["id"])
+        cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
+        cur.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rowid,))
+        cur.execute("DELETE FROM chunks WHERE id = ?", (rowid,))
+        return True
+
     def upsert_chunk(
         self,
         chunk: Chunk,
