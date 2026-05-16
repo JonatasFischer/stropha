@@ -99,14 +99,30 @@ class MlxBackend(InferenceBackend):
             return None
 
         try:
-            # MLX generate returns the completion directly
+            # Build kwargs for mlx_lm.generate
+            # Note: mlx_lm uses a sampler function for temperature control,
+            # but the default greedy sampler (temp=0) is fine for our use case.
+            # For non-zero temperature, we'd need to pass a custom sampler.
+            kwargs: dict = {
+                "max_tokens": max_tokens,
+                "verbose": False,
+            }
+
+            # Only add sampler for non-zero temperature
+            if temperature > 0:
+                try:
+                    from mlx_lm.sample_utils import make_sampler
+
+                    kwargs["sampler"] = make_sampler(temp=temperature)
+                except ImportError:
+                    # Older mlx_lm version without make_sampler, use default
+                    pass
+
             text = self._generate_fn(
                 self._model,
                 self._tokenizer,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                verbose=False,
-                temp=temperature if temperature > 0 else None,
+                prompt,
+                **kwargs,
             )
 
             if not isinstance(text, str):
