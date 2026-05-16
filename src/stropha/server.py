@@ -13,6 +13,13 @@ Every search result carries a ``repo`` field (URL, default branch, HEAD)
 so a remote MCP client can ``git clone`` the source. The server speaks
 stdio by default; that is the transport Claude Code, Cursor and friends
 launch automatically when configured via `.mcp.json`.
+
+Background file watcher (enabled by default via ``STROPHA_MCP_WATCH=1``):
+The server starts a background thread that polls the target repo for file
+changes. After a debounce period (default 2s of no further changes), it
+triggers a light re-index pass so MCP queries always see recent edits
+without requiring a separate ``stropha watch`` command. Disable with
+``STROPHA_MCP_WATCH=0`` if you prefer manual indexing or use the hook only.
 """
 
 from __future__ import annotations
@@ -57,6 +64,7 @@ from .retrieval.graph import (
     has_rationale_edges,
 )
 from .storage import Storage
+from .watch import WatchController
 
 log = get_logger(__name__)
 
@@ -84,13 +92,30 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         version=__version__,
         index_path=str(cfg.resolve_index_path()),
         target=str(cfg.target_repo),
+        mcp_watch=cfg.mcp_watch,
     )
     embedder = build_embedder(cfg)
     storage = Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim)
     engine = SearchEngine(storage, embedder)
+
+    # Start background file watcher if enabled (default: on).
+    # This keeps the index fresh as the user edits files, so MCP queries
+    # always see recent changes without requiring a separate `stropha watch`.
+    watcher: WatchController | None = None
+    if cfg.mcp_watch:
+        watcher = WatchController(
+            repo=cfg.target_repo,
+            interval_s=cfg.mcp_watch_interval,
+            debounce_s=cfg.mcp_watch_debounce,
+            full_refresh=False,  # Light refresh; hook handles graphify
+        )
+        watcher.start()
+
     try:
         yield AppContext(cfg, storage, embedder, engine)
     finally:
+        if watcher is not None:
+            watcher.stop()
         log.info("mcp.shutdown")
         storage.close()
 
@@ -234,17 +259,58 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
 
 # ---- tools ------------------------------------------------------------------
 
+def _apply_filters(
+    hits: list,
+    *,
+    language: list[str] | None = None,
+    path_prefix: str | None = None,
+    kind: list[str] | None = None,
+    exclude_tests: bool = False,
+) -> list:
+    """Apply post-retrieval filters to search hits.
+    
+    Note: This is post-filtering on already-retrieved candidates. For large
+    result sets, pre-filtering in SQL would be more efficient (future work).
+    """
+    result = hits
+    
+    if language:
+        lang_set = {lang.lower() for lang in language}
+        result = [h for h in result if h.language.lower() in lang_set]
+    
+    if path_prefix:
+        result = [h for h in result if h.rel_path.startswith(path_prefix)]
+    
+    if kind:
+        kind_set = {k.lower() for k in kind}
+        result = [h for h in result if h.kind.lower() in kind_set]
+    
+    if exclude_tests:
+        test_patterns = ("test_", "_test.", ".test.", "/tests/", "/test/", "Test.")
+        result = [
+            h for h in result
+            if not any(p in h.rel_path for p in test_patterns)
+        ]
+    
+    return result
+
+
 @mcp.tool(
     title="Search code",
     description=(
         "Hybrid semantic + lexical search over the indexed codebase. "
         "Use for queries like 'where is X', 'how does Y work', "
-        "'show examples of Z'. For an exact symbol name, prefer get_symbol."
+        "'show examples of Z'. For an exact symbol name, prefer get_symbol. "
+        "Supports optional filters: language, path_prefix, kind, exclude_tests."
     ),
 )
 def search_code(
     query: str,
     top_k: int = 10,
+    language: list[str] | None = None,
+    path_prefix: str | None = None,
+    kind: list[str] | None = None,
+    exclude_tests: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -254,17 +320,40 @@ def search_code(
     Args:
         query: Natural-language question or technical terms.
         top_k: 1–30. Default 10.
+        language: Filter by language(s), e.g. ["java", "python"].
+        path_prefix: Filter by path prefix, e.g. "backend/src/".
+        kind: Filter by chunk kind(s), e.g. ["method", "class", "function"].
+        exclude_tests: If True, exclude test files from results.
     """
     app = _ctx(ctx)
     top_k = max(1, min(top_k, 30))
+    
+    # Fetch more candidates when filtering to ensure we get enough results
+    has_filters = any([language, path_prefix, kind, exclude_tests])
+    fetch_k = top_k * 3 if has_filters else top_k
+    
     try:
-        hits = app.search_engine.search(query, top_k=top_k)
+        hits = app.search_engine.search(query, top_k=fetch_k)
     except StrophaError as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query)
+    
+    # Apply filters
+    if has_filters:
+        hits = _apply_filters(
+            hits,
+            language=language,
+            path_prefix=path_prefix,
+            kind=kind,
+            exclude_tests=exclude_tests,
+        )
+    
+    # Truncate to requested top_k
+    hits = hits[:top_k]
+    
     return SearchResponse(
         results=[_to_result(h) for h in hits],
-        total_candidates=top_k,
+        total_candidates=len(hits),
         query=query,
     )
 

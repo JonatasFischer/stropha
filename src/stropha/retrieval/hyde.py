@@ -68,17 +68,22 @@ def _timeout_s() -> float:
         return 8.0
 
 
-def maybe_hyde_rewrite(query: str) -> str | None:
+def maybe_hyde_rewrite(query: str, *, force_enabled: bool = False) -> str | None:
     """Return a hypothetical document for ``query`` or ``None`` on fail/skip.
 
     Caller is expected to use the returned text *instead of* the raw
     query for the dense embedding step; the BM25 / symbol streams keep
     using the raw query (HyDE doesn't help literal-match lanes).
 
+    Args:
+        query: The user's search query.
+        force_enabled: If True, skip the _enabled() check. Used when caller
+            already determined HyDE should run (e.g., config flag).
+
     Never raises. Worst case it returns None and the caller falls back
     to the raw query — same behaviour as if the feature were off.
     """
-    if not _enabled():
+    if not force_enabled and not _enabled():
         return None
     if not query or not query.strip():
         return None

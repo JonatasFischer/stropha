@@ -72,6 +72,11 @@ class Config(BaseSettings):
     log_level: str = Field(default="INFO", alias="STROPHA_LOG_LEVEL")
     max_file_bytes: int = Field(default=524_288, alias="STROPHA_MAX_FILE_BYTES")
 
+    # MCP server watch integration (auto-reindex on file changes).
+    mcp_watch: bool = Field(default=True, alias="STROPHA_MCP_WATCH")
+    mcp_watch_interval: float = Field(default=1.0, alias="STROPHA_MCP_WATCH_INTERVAL")
+    mcp_watch_debounce: float = Field(default=2.0, alias="STROPHA_MCP_WATCH_DEBOUNCE")
+
     @property
     def use_voyage(self) -> bool:
         return bool(self.voyage_api_key and self.voyage_api_key.strip())

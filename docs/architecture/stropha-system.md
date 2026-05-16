@@ -15,7 +15,7 @@ Documento de design técnico para um sistema de Retrieval-Augmented Generation (
 >
 > **Diferido por política local-only**: Voyage `rerank-2.5`, Contextual Retrieval (Anthropic), enrichers `anthropic`/`openai`, storage `qdrant`/`pgvector`, deploy remoto / multi-tenant / Web UI.
 >
-> Esquema SQLite atual: v6. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF; v6 adiciona tabela `files` para cache incremental file-level (Phase A).
+> Esquema SQLite atual: v7. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF; v6 adiciona tabela `files` para cache incremental file-level (Phase A); v7 adiciona `repo_id` a `graph_nodes` e `graph_edges` para suporte multi-repo graphify (múltiplos repos com grafos próprios compartilhando um único índice stropha).
 
 ---
 

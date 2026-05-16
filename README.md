@@ -2,11 +2,11 @@
 
 > A local-first **RAG over your codebase**, exposed to any LLM via the
 > [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Tree-sitter
-> AST chunking, three-stream hybrid retrieval (dense + BM25 + symbol),
+> AST chunking, four-stream hybrid retrieval (dense + BM25 + symbol + graph-vec),
 > graph-aware tools (`find_callers`, `find_rationale`, …), and a swappable
 > adapter framework so every stage of the pipeline is pluggable.
 
-[![Tests](https://img.shields.io/badge/tests-334%20passing-brightgreen)](#evaluation)
+[![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen)](#evaluation)
 [![Python](https://img.shields.io/badge/python-3.12+-blue)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
@@ -397,7 +397,7 @@ flowchart LR
         EA[noop / hierarchical /<br/>graph-aware / ollama]
         EMA[local / voyage]
         SA[sqlite-vec]
-        RA[hybrid-rrf<br/>+ 3 stream adapters]
+        RA[hybrid-rrf<br/>+ 4 stream adapters]
     end
     WS --> WA
     CS --> CA
@@ -608,7 +608,7 @@ dotted-suffix match against `symbol`).
 ## Development
 
 ```bash
-# Test (217 unit tests, runs in ~5 s)
+# Test (429 unit tests, runs in ~5 s)
 uv run pytest
 
 # Lint
@@ -651,7 +651,7 @@ docs/architecture/
 
 CLAUDE.md            # live state for LLM agents — read this first
 AGENTS.md            # OpenCode-specific graphify rules
-tests/unit/          # 334 unit tests (~5s)
+tests/unit/          # 429 unit tests (~5s)
 tests/eval/          # golden JSONL (30 queries; CI guard via `stropha eval`)
 graphify-out/        # generated graph snapshot (committed; refreshed by post-commit hook)
 ```

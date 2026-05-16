@@ -4,12 +4,13 @@ Each module defines the contract a specific stage's adapters must satisfy.
 Concrete implementations live under ``stropha.adapters.<stage>``.
 
 Phase 1 shipped ``embedder`` and ``enricher``. Phase 2 adds ``walker``,
-``storage``, ``retrieval``. Phase 3 adds ``chunker``.
+``storage``, ``retrieval``. Phase 3 adds ``chunker``. Phase 5 adds ``reranker``.
 """
 
 from .chunker import ChunkerStage, LanguageChunkerStage
 from .embedder import EmbedderStage
 from .enricher import EnricherStage
+from .reranker import RerankerStage
 from .retrieval import RetrievalStage
 from .retrieval_stream import RetrievalStreamStage
 from .storage import StorageStage
@@ -20,6 +21,7 @@ __all__ = [
     "EmbedderStage",
     "EnricherStage",
     "LanguageChunkerStage",
+    "RerankerStage",
     "RetrievalStage",
     "RetrievalStreamStage",
     "StorageStage",

@@ -9,7 +9,7 @@ Operational guide for LLM coding agents (Claude Code, OpenCode, etc.) working on
 3. **Use the RAG before reading files.** The MCP tools `mcp_Stropha_search_code`, `mcp_Stropha_get_symbol`, `mcp_Stropha_get_file_outline` answer 90% of "where is X?" questions cheaper than a `Read`.
 4. **The hook auto-refreshes on commit.** `.git/hooks/post-commit` v=3 runs `graphify update` → `stropha index` in detached background after every commit. Do NOT manually run `stropha index` unless you are debugging the hook itself. Logs: `~/.cache/stropha-hook.log`.
 5. **Before editing code, check §3 invariants.** Drift detection, schema migration discipline, and the local-only policy are non-negotiable.
-6. **After editing code:** `uv run pytest -q` MUST stay green (334 tests at last bump). The hook regenerates the graph; you don't have to.
+6. **After editing code:** `uv run pytest -q` MUST stay green (429 tests at last bump). The hook regenerates the graph; you don't have to.
 
 For the public pitch + install instructions, see `README.md`. For design rationale, see the specs in `docs/architecture/`.
 
@@ -35,14 +35,17 @@ The original development target is the sibling **Mimoria** repository at `../mim
 | v4 | `graph_nodes` + `graph_edges` + `graph_meta` | graphify mirror (RFC §1.5a) |
 | v5 | `graph_nodes.embedding` + `embedding_model` + `embedding_dim` | graph-vec retrieval stream (Trilha A L3) |
 | v6 | `files` table (repo_id, rel_path, mtime, size_bytes, content_hash, last_enricher_id, last_embedder_model) | file-level dirty cache for incremental indexing (Phase A) |
+| v7 | `graph_nodes.repo_id` + `graph_edges.repo_id` | multi-repo graphify support (distributed monorepo architecture) |
 
 All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREATE TABLE IF NOT EXISTS`). Legacy NULL `enricher_id` is treated as `'noop'` so v1/v2 dbs upgrade without full re-embed.
+
+**Multi-repo graphify support (v7)**: Multiple repos with their own `graphify-out/graph.json` can share a single stropha index. Node IDs are prefixed with `{repo_id}:` to avoid collisions (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Graph tools (find_callers, find_related, etc.) work cross-repo by default. The GraphifyLoader tracks per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`.
 
 ### 2.2 MCP tools (11) — server name `stropha_rag`
 
 | Tool | Purpose | Graph required |
 |---|---|---|
-| `search_code` | Hybrid semantic + lexical search (4 streams + RRF, optional HyDE + recursive merge) | no |
+| `search_code` | Hybrid semantic + lexical search (4 streams + RRF, optional reranker + filters: `language`, `path_prefix`, `kind`, `exclude_tests`) | no |
 | `get_symbol` | Exact symbol lookup, cheaper than `search_code` when name is known | no |
 | `get_file_outline` | Symbolic outline of one file — plan a `Read` before consuming a whole file | no |
 | `list_repos` | Enumerate repos present in the index | no |
@@ -65,8 +68,9 @@ Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirr
 | enricher | `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | `<name>:<flag-letters>` (drift on flag flip) |
 | embedder | `local` (fastembed), `voyage`, `bge-m3` | `<name>:<model>:<dim>` |
 | storage | `sqlite-vec` | `sqlite-vec:dim=<n>` |
-| retrieval | `hybrid-rrf` (4 streams fused) | `hybrid-rrf:k=60:streams=<hash>` |
+| retrieval | `hybrid-rrf` (4 streams fused + optional reranker) | `hybrid-rrf:k=60:streams=<hash>:reranker=<id>` |
 | retrieval-stream | `vec-cosine`, `fts5-bm25`, `like-tokens`, `graph-vec` | `<name>:k=<n>[:min=<sim>]` |
+| reranker | `noop` (default), `cross-encoder` (BAAI/bge-reranker-base) | `reranker:<name>:<model>` |
 
 The chunker's language sub-adapters are themselves an adapter stage (`language-chunker`) — `stropha adapters list --stage language-chunker` shows them. The `hybrid-rrf` retrieval adapter digests its stream composition into its `adapter_id`, so disabling/swapping any sub-stream forces a fresh id (drift hooks pick it up).
 
@@ -109,10 +113,13 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `STROPHA_HOOK_PROJECT_DIR` | baked / `$TOPLEVEL` | `uv run --directory` target (cross-repo) |
 | `STROPHA_HOOK_INDEX_PATH` | baked / `.env` | Per-repo `STROPHA_INDEX_PATH` for the hook |
 | `STROPHA_RENAME_THRESHOLD` | `80` | Git rename detection similarity threshold (0-100). Higher = stricter match. |
+| `STROPHA_MCP_WATCH` | `1` | Enable auto-reindex file watcher in MCP server (debounced) |
+| `STROPHA_MCP_WATCH_INTERVAL` | `1.0` | Polling interval in seconds for MCP watch |
+| `STROPHA_MCP_WATCH_DEBOUNCE` | `2.0` | Debounce window in seconds (waits for quiet period before reindex) |
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (383 unit tests, ~8s)
+### 2.6 Test inventory (392 unit tests, ~8s)
 
 Per file: `test_chunker` 8 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 
@@ -154,10 +161,10 @@ Phase 1 ✓:
 - [x] Class/interface skeleton chunks: emit a meso-level chunk per
       container with qualified name + member list so BM25 matches the
       type by identifier.
-- [x] Hybrid search (spec §6.1): **three streams** fused via RRF —
+- [x] Hybrid search (spec §6.1): **four streams** fused via RRF —
       dense (sqlite-vec) + sparse (FTS5 BM25, with CamelCase splitting +
       path/symbol tokens augmenting the FTS document) + symbol-token
-      lookup (query routing per spec §6.3.5).
+      lookup (query routing per spec §6.3.5) + graph-vec (graphify embeddings).
 - [x] MCP server (`stropha-mcp`) over stdio. Tools: `search_code`,
       `get_symbol`, `get_file_outline`, `list_repos`.
       Resource: `stropha://stats`.
@@ -496,7 +503,7 @@ Grouped by concern. Mirrors the actual filesystem layout under `src/stropha/`. T
 |---|---|
 | `storage/sqlite.py` | SQLite + sqlite-vec + FTS5. Schema v1→v5. `_fts_text()` builds the FTS5 document. `augment_fts_with_graph()` does retroactive L2. |
 | `retrieval/rrf.py` | RRF fuse (k=60). |
-| `retrieval/search.py` | `SearchEngine` — composes 3 streams from `Storage` + optional HyDE rewrite + optional recursive merge. Used by CLI; MCP uses `hybrid-rrf` adapter (same logic). |
+| `retrieval/search.py` | `SearchEngine` — composes 4 streams from `Storage` + optional HyDE rewrite + optional recursive merge. Used by CLI; MCP uses `hybrid-rrf` adapter (same logic). |
 | `retrieval/graph.py` | Pure-SQL graph traversal — backs all 6 graph MCP tools. |
 | `retrieval/hyde.py` | Hypothetical doc rewrite via Ollama (toggle `STROPHA_HYDE_ENABLED`). |
 | `retrieval/recursive.py` | Parent promotion + adjacency merge (toggle `STROPHA_RECURSIVE_RETRIEVAL`). |
@@ -526,7 +533,7 @@ Every adapter writes `(embedding_model, embedding_dim)` into each chunk row. Swi
 ## Testing
 
 ```bash
-uv run pytest -q                 # 334 unit tests, ~5s
+uv run pytest -q                 # 429 unit tests, ~5s
 uv run pytest -m e2e             # end-to-end (skipped by default; needs fixture)
 uv run pytest --collect-only -q  # full inventory by test id
 

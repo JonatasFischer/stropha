@@ -13,7 +13,7 @@ import pytest
 
 from stropha.adapters.embedder.bge_m3 import BgeM3Config, BgeM3Embedder
 from stropha.pipeline.registry import lookup_adapter
-from stropha.watch import _format_changes, _Snapshot, _snapshot
+from stropha.watch import _format_changes, _Snapshot, _snapshot, WatchController
 
 
 # --------------------------------------------------------------------------- snapshot diff
@@ -89,6 +89,37 @@ def test_format_changes_caps_long_lists() -> None:
     out = _format_changes(many, [], root=Path("/x"))
     assert "10 changed" in out
     assert "more" in out  # the "(+N more)" elision
+
+
+# --------------------------------------------------------------------------- WatchController
+
+
+def test_watch_controller_starts_and_stops(tmp_path: Path) -> None:
+    """WatchController can be started and stopped cleanly."""
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    ctrl = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
+    ctrl.start()
+    assert ctrl._thread is not None
+    assert ctrl._thread.is_alive()
+    ctrl.stop(timeout=2.0)
+    assert not ctrl._thread.is_alive()
+
+
+def test_watch_controller_double_start_is_noop(tmp_path: Path) -> None:
+    """Starting twice doesn't spawn two threads."""
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    ctrl = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
+    ctrl.start()
+    first_thread = ctrl._thread
+    ctrl.start()  # Should be no-op
+    assert ctrl._thread is first_thread
+    ctrl.stop(timeout=2.0)
+
+
+def test_watch_controller_stop_without_start_is_noop(tmp_path: Path) -> None:
+    """Stopping without starting doesn't raise."""
+    ctrl = WatchController(repo=tmp_path)
+    ctrl.stop()  # Should not raise
 
 
 # --------------------------------------------------------------------------- bge-m3 registry

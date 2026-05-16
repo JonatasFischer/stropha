@@ -20,12 +20,20 @@ Design:
 - Doesn't reload the graphify graph or re-embed graph nodes by default
   — those are heavy and the hook handles them on commit. Override via
   ``--full-refresh`` if you want a complete pass.
+
+MCP Integration:
+- When ``STROPHA_MCP_WATCH=1`` (default), the MCP server starts the
+  watcher in a background thread during lifespan. This ensures queries
+  always see recent edits without requiring a separate ``stropha watch``.
+- The watcher can be stopped via ``WatchController.stop()`` or by
+  setting the threading.Event passed to ``watch_repo_async()``.
 """
 
 from __future__ import annotations
 
 import os
 import signal
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -194,3 +202,96 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
                 built.storage.close()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Async/threaded watch for MCP server integration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WatchController:
+    """Controller for a background watch thread.
+
+    Use this to start/stop the watcher from the MCP server lifespan.
+    """
+
+    repo: Path
+    interval_s: float = _DEFAULT_INTERVAL_S
+    debounce_s: float = _DEFAULT_DEBOUNCE_S
+    full_refresh: bool = False
+
+    _stop_event: threading.Event = field(default_factory=threading.Event)
+    _thread: threading.Thread | None = field(default=None, init=False)
+
+    def start(self) -> None:
+        """Start the watch loop in a background daemon thread."""
+        if self._thread is not None and self._thread.is_alive():
+            log.warning("watch.already_running")
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="stropha-watch",
+            daemon=True,
+        )
+        self._thread.start()
+        log.info(
+            "watch.thread_started",
+            repo=str(self.repo),
+            interval_s=self.interval_s,
+            debounce_s=self.debounce_s,
+        )
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Signal the watch loop to stop and wait for thread to finish."""
+        if self._thread is None or not self._thread.is_alive():
+            return
+        log.info("watch.thread_stopping")
+        self._stop_event.set()
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            log.warning("watch.thread_did_not_stop", timeout=timeout)
+        else:
+            log.info("watch.thread_stopped")
+
+    def _run_loop(self) -> None:
+        """The actual watch loop, runs in a background thread."""
+        repo = self.repo.expanduser().resolve()
+        if not repo.is_dir():
+            log.error("watch.not_a_directory", path=str(repo))
+            return
+
+        previous = _snapshot(repo)
+        pending_since: float | None = None
+
+        while not self._stop_event.is_set():
+            # Use wait() with timeout instead of sleep() for responsive shutdown
+            if self._stop_event.wait(timeout=self.interval_s):
+                break  # Stop event was set
+
+            try:
+                fresh = _snapshot(repo)
+            except Exception as exc:
+                log.warning("watch.snapshot_failed", error=str(exc))
+                continue
+
+            changed, removed = previous.diff(fresh)
+            now = time.monotonic()
+
+            if changed or removed:
+                pending_since = now
+                log.info(
+                    "watch.changes_seen",
+                    summary=_format_changes(changed, removed, root=repo),
+                )
+                previous = fresh
+            elif pending_since is not None and (now - pending_since) >= self.debounce_s:
+                # Debounce window elapsed with no further activity → re-index.
+                log.info("watch.reindex_start")
+                try:
+                    _reindex(repo, full_refresh=self.full_refresh)
+                    log.info("watch.reindex_done")
+                except Exception as exc:
+                    log.warning("watch.reindex_failed", error=str(exc))
+                pending_since = None

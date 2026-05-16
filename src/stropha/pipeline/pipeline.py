@@ -207,6 +207,11 @@ class Pipeline:
         into ``graph_nodes.embedding`` so the ``graph-vec`` retrieval stream
         has fresh vectors. The vec loader is incremental: nodes whose stored
         embedding model matches the active embedder are skipped.
+
+        Multi-repo mode (schema v7):
+          Each repo gets its own namespace in graph_nodes/graph_edges via
+          the repo_id column. Node IDs are prefixed with ``{repo_id}:`` to
+          avoid collisions when multiple repos share the same index.
         """
         # Local import — keeps the loader module optional. If graphify
         # tables don't exist (older schema, custom storage adapter) just
@@ -218,8 +223,14 @@ class Pipeline:
             return
         loaded_anything = False
         for repo_path in self._repos:
+            # Get repo_id for this repo (required for multi-repo isolation)
+            identity = detect_repo(repo_path)
+            repo_id = self._storage.register_repo(identity)
+
             try:
-                loader = GraphifyLoader(self._storage, repo_path)  # type: ignore[arg-type]
+                loader = GraphifyLoader(
+                    self._storage, repo_path, repo_id=repo_id,
+                )  # type: ignore[arg-type]
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning("graphify_loader.init_failed", error=str(exc))
                 continue
@@ -229,6 +240,7 @@ class Pipeline:
                 log.debug(
                     "graphify_loader.fresh",
                     path=str(loader.graph_path),
+                    repo_id=repo_id,
                 )
                 # Even if the structural graph is fresh, the embedder may have
                 # changed since last index — let the vec loader decide.
@@ -240,6 +252,7 @@ class Pipeline:
                     log.warning(
                         "graphify_loader.load_failed",
                         path=str(loader.graph_path),
+                        repo_id=repo_id,
                         error=str(exc),
                     )
                     continue

@@ -459,3 +459,234 @@ def test_diff_load_edges_with_null_source_file_dedupe(
         "SELECT COUNT(*) FROM graph_edges"
     ).fetchone()[0]
     assert n_edges == 1  # not 3
+
+
+# --------------------------------------------------------------------------- multi-repo (schema v7)
+
+
+def _register_repo(storage: Storage, repo_id_hint: int, normalized_key: str) -> int:
+    """Register a fake repo in the storage, returning its ID."""
+    from stropha.ingest.git_meta import RepoIdentity
+    identity = RepoIdentity(
+        normalized_key=normalized_key,
+        remote_url=None,
+        root_path=f"/fake/{repo_id_hint}",
+        default_branch=None,
+        head_commit=None,
+    )
+    repo_id = storage.register_repo(identity)
+    storage.commit()  # Commit the transaction so subsequent operations can start fresh
+    return repo_id
+
+
+def test_multi_repo_node_ids_are_prefixed(tmp_path: Path, storage: Storage) -> None:
+    """With repo_id, node IDs are prefixed with '{repo_id}:'."""
+    repo_id = _register_repo(storage, 1, "test:repo1")
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "foo", "label": "Foo"}],
+        edges=[],
+    )
+    loader = GraphifyLoader(storage, tmp_path, repo_id=repo_id)
+    result = loader.load()
+
+    assert result is not None
+    assert result.nodes_loaded == 1
+
+    # Check the stored node_id is prefixed
+    row = storage._conn.execute(
+        "SELECT node_id, repo_id FROM graph_nodes LIMIT 1"
+    ).fetchone()
+    assert row["node_id"] == f"{repo_id}:foo"
+    assert row["repo_id"] == repo_id
+
+
+def test_multi_repo_edge_endpoints_are_prefixed(tmp_path: Path, storage: Storage) -> None:
+    """Edge source and target IDs are also prefixed with repo_id."""
+    repo_id = _register_repo(storage, 1, "test:repo1")
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[{"source": "a", "target": "b", "relation": "calls",
+                "confidence": "EXTRACTED"}],
+    )
+    loader = GraphifyLoader(storage, tmp_path, repo_id=repo_id)
+    loader.load()
+
+    row = storage._conn.execute(
+        "SELECT source, target, repo_id FROM graph_edges LIMIT 1"
+    ).fetchone()
+    assert row["source"] == f"{repo_id}:a"
+    assert row["target"] == f"{repo_id}:b"
+    assert row["repo_id"] == repo_id
+
+
+def test_multi_repo_isolation_different_repos_same_node_id(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    """Two repos can have the same node_id in the graph without collision."""
+    repo_a_id = _register_repo(storage, 1, "test:repo_a")
+    repo_b_id = _register_repo(storage, 2, "test:repo_b")
+
+    # Repo A: graphify-out-a/graph.json
+    repo_a_root = tmp_path / "repo_a"
+    repo_a_root.mkdir()
+    graph_a = repo_a_root / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_a,
+        nodes=[{"id": "FooClass", "label": "FooClass A"}],
+        edges=[],
+    )
+
+    # Repo B: graphify-out-b/graph.json
+    repo_b_root = tmp_path / "repo_b"
+    repo_b_root.mkdir()
+    graph_b = repo_b_root / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_b,
+        nodes=[{"id": "FooClass", "label": "FooClass B"}],
+        edges=[],
+    )
+
+    loader_a = GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id)
+    loader_b = GraphifyLoader(storage, repo_b_root, repo_id=repo_b_id)
+
+    loader_a.load()
+    loader_b.load()
+
+    # Both nodes exist without collision
+    rows = storage._conn.execute(
+        "SELECT node_id, label, repo_id FROM graph_nodes ORDER BY repo_id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["node_id"] == f"{repo_a_id}:FooClass"
+    assert rows[0]["label"] == "FooClass A"
+    assert rows[0]["repo_id"] == repo_a_id
+    assert rows[1]["node_id"] == f"{repo_b_id}:FooClass"
+    assert rows[1]["label"] == "FooClass B"
+    assert rows[1]["repo_id"] == repo_b_id
+
+
+def test_multi_repo_staleness_is_per_repo(tmp_path: Path, storage: Storage) -> None:
+    """Each repo has its own staleness check (per-repo mtime meta key)."""
+    repo_a_id = _register_repo(storage, 1, "test:repo_a")
+    repo_b_id = _register_repo(storage, 2, "test:repo_b")
+
+    repo_a_root = tmp_path / "repo_a"
+    repo_a_root.mkdir()
+    graph_a = repo_a_root / "graphify-out" / "graph.json"
+    _write_graph(graph_a, nodes=[{"id": "a", "label": "A"}], edges=[])
+
+    repo_b_root = tmp_path / "repo_b"
+    repo_b_root.mkdir()
+    graph_b = repo_b_root / "graphify-out" / "graph.json"
+    _write_graph(graph_b, nodes=[{"id": "b", "label": "B"}], edges=[])
+
+    loader_a = GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id)
+    loader_b = GraphifyLoader(storage, repo_b_root, repo_id=repo_b_id)
+
+    # Initially both are stale
+    assert loader_a.is_stale() is True
+    assert loader_b.is_stale() is True
+
+    # Load repo A
+    loader_a.load()
+    assert loader_a.is_stale() is False
+    assert loader_b.is_stale() is True  # B still stale
+
+    # Load repo B
+    loader_b.load()
+    assert loader_a.is_stale() is False
+    assert loader_b.is_stale() is False
+
+
+def test_multi_repo_reload_does_not_delete_other_repo_nodes(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    """Reloading one repo's graph does not affect another repo's nodes."""
+    repo_a_id = _register_repo(storage, 1, "test:repo_a")
+    repo_b_id = _register_repo(storage, 2, "test:repo_b")
+
+    repo_a_root = tmp_path / "repo_a"
+    repo_a_root.mkdir()
+    graph_a = repo_a_root / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_a,
+        nodes=[{"id": "a1", "label": "A1"}, {"id": "a2", "label": "A2"}],
+        edges=[],
+    )
+
+    repo_b_root = tmp_path / "repo_b"
+    repo_b_root.mkdir()
+    graph_b = repo_b_root / "graphify-out" / "graph.json"
+    _write_graph(graph_b, nodes=[{"id": "b1", "label": "B1"}], edges=[])
+
+    loader_a = GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id)
+    loader_b = GraphifyLoader(storage, repo_b_root, repo_id=repo_b_id)
+
+    loader_a.load()
+    loader_b.load()
+
+    # Verify both repos' nodes exist
+    assert storage._conn.execute(
+        "SELECT COUNT(*) FROM graph_nodes"
+    ).fetchone()[0] == 3
+
+    # Now update repo A with only one node (simulating a node deletion)
+    _write_graph(graph_a, nodes=[{"id": "a1", "label": "A1 updated"}], edges=[])
+
+    # Recreate loader with fresh mtime detection
+    loader_a_fresh = GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id)
+    loader_a_fresh.load()
+
+    # Repo A has 1 node (a2 deleted), repo B still has 1 node
+    rows = storage._conn.execute(
+        "SELECT node_id, label, repo_id FROM graph_nodes ORDER BY repo_id, node_id"
+    ).fetchall()
+    assert len(rows) == 2  # 1 from A + 1 from B
+    assert rows[0]["node_id"] == f"{repo_a_id}:a1"
+    assert rows[0]["label"] == "A1 updated"
+    assert rows[1]["node_id"] == f"{repo_b_id}:b1"  # B's node untouched
+
+
+def test_multi_repo_stats_shows_per_repo_counts(tmp_path: Path, storage: Storage) -> None:
+    """stats() with repo_id returns counts for that repo only."""
+    repo_a_id = _register_repo(storage, 1, "test:repo_a")
+    repo_b_id = _register_repo(storage, 2, "test:repo_b")
+
+    repo_a_root = tmp_path / "repo_a"
+    repo_a_root.mkdir()
+    graph_a = repo_a_root / "graphify-out" / "graph.json"
+    _write_graph(
+        graph_a,
+        nodes=[{"id": "a1", "label": "A1"}, {"id": "a2", "label": "A2"}],
+        edges=[{"source": "a1", "target": "a2", "relation": "calls",
+                "confidence": "EXTRACTED"}],
+    )
+
+    repo_b_root = tmp_path / "repo_b"
+    repo_b_root.mkdir()
+    graph_b = repo_b_root / "graphify-out" / "graph.json"
+    _write_graph(graph_b, nodes=[{"id": "b1", "label": "B1"}], edges=[])
+
+    loader_a = GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id)
+    loader_b = GraphifyLoader(storage, repo_b_root, repo_id=repo_b_id)
+
+    loader_a.load()
+    loader_b.load()
+
+    # Stats for repo A
+    stats_a = loader_a.stats()
+    assert stats_a is not None
+    assert stats_a["nodes"] == 2
+    assert stats_a["edges_total"] == 1
+    assert stats_a["repo_id"] == repo_a_id
+
+    # Stats for repo B
+    stats_b = loader_b.stats()
+    assert stats_b is not None
+    assert stats_b["nodes"] == 1
+    assert stats_b["edges_total"] == 0
+    assert stats_b["repo_id"] == repo_b_id

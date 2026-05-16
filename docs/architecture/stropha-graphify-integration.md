@@ -1,8 +1,8 @@
 # RAG ↔ Graphify Integration & Post-Commit Automation
 
-> **Status:** Implemented (Fase 1.5a/b/c/e/f shipped; cross-repo hook v=3 shipped)
-> **Versão:** 1.0
-> **Data:** 2026-05-14 (RFC) — 2026-05-15 (Implementação)
+> **Status:** Implemented (Fase 1.5a/b/c/e/f shipped; cross-repo hook v=3 shipped; multi-repo graphify v7 shipped)
+> **Versão:** 1.1
+> **Data:** 2026-05-14 (RFC) — 2026-05-15 (Implementação) — 2026-05-16 (Multi-repo v7)
 > **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
 > **Documentos relacionados:**
 > - `docs/architecture/stropha-system.md` (spec mestre — §3.5 symbol graph, §6.3.5 query routing, §8 atualização incremental, §9.2 MCP tools)
@@ -223,40 +223,49 @@ Claude Code ──tool call──► server.py:find_callers(symbol)
 ### 4.1 Schema SQLite (extensão do `storage/sqlite.py:Storage.migrate`)
 
 ```sql
--- Novo: graph_nodes
+-- graph_nodes (v4 base, v7 adds repo_id for multi-repo)
 CREATE TABLE IF NOT EXISTS graph_nodes (
-    node_id          TEXT PRIMARY KEY,         -- graphify's "id" field
+    node_id          TEXT PRIMARY KEY,         -- graphify's "id", prefixed with "{repo_id}:" in v7
     label            TEXT NOT NULL,            -- human-readable name
     norm_label       TEXT NOT NULL,            -- lowercased, used for fuzzy match
     file_type        TEXT,                     -- code | document | paper | image | video
     source_file      TEXT,                     -- repo-relative path
     source_location  TEXT,                     -- "L<line>"
-    community        INTEGER,                  -- Leiden community id
+    community_id     INTEGER,                  -- Leiden community id (renamed from community in v4)
+    community_label  TEXT,                     -- human-readable community name (v4+)
+    repo_id          INTEGER REFERENCES repos(id),  -- v7: FK to repos table for multi-repo isolation
+    -- v5 adds: embedding BLOB, embedding_model TEXT, embedding_dim INTEGER
     loaded_at        TEXT NOT NULL             -- ISO timestamp
 );
 
 CREATE INDEX IF NOT EXISTS idx_graph_nodes_label      ON graph_nodes(label);
 CREATE INDEX IF NOT EXISTS idx_graph_nodes_norm_label ON graph_nodes(norm_label);
 CREATE INDEX IF NOT EXISTS idx_graph_nodes_file       ON graph_nodes(source_file);
-CREATE INDEX IF NOT EXISTS idx_graph_nodes_community  ON graph_nodes(community);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_community  ON graph_nodes(community_id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_repo_id    ON graph_nodes(repo_id);  -- v7
 
--- Novo: graph_edges
+-- graph_edges (v4 base, v7 adds repo_id for multi-repo)
 CREATE TABLE IF NOT EXISTS graph_edges (
-    source        TEXT NOT NULL,
-    target        TEXT NOT NULL,
-    relation      TEXT NOT NULL,                -- calls | method | contains | imports | …
-    confidence    TEXT NOT NULL,                -- EXTRACTED | INFERRED | AMBIGUOUS
+    source        TEXT NOT NULL,               -- node_id of caller (prefixed with "{repo_id}:" in v7)
+    target        TEXT NOT NULL,               -- node_id of callee (prefixed with "{repo_id}:" in v7)
+    relation      TEXT NOT NULL,               -- calls | method | contains | imports | …
+    confidence    TEXT NOT NULL,               -- EXTRACTED | INFERRED | AMBIGUOUS
+    confidence_score REAL,                     -- 0.0–1.0 numeric confidence (v4+)
+    context       TEXT,                        -- optional context snippet (v4+)
     weight        REAL DEFAULT 1.0,
-    source_file   TEXT,                          -- for join-back to chunks
-    source_loc    TEXT,
+    source_file   TEXT,                        -- for join-back to chunks
+    source_location TEXT,                      -- renamed from source_loc in v4
+    repo_id       INTEGER REFERENCES repos(id), -- v7: FK to repos table for multi-repo isolation
     FOREIGN KEY (source) REFERENCES graph_nodes(node_id),
-    FOREIGN KEY (target) REFERENCES graph_nodes(node_id)
+    FOREIGN KEY (target) REFERENCES graph_nodes(node_id),
+    PRIMARY KEY (source, target, relation, source_file, source_location)  -- v4 composite PK
 );
 
 CREATE INDEX IF NOT EXISTS idx_graph_edges_source     ON graph_edges(source);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target     ON graph_edges(target);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_relation   ON graph_edges(relation);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_confidence ON graph_edges(confidence);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_repo_id    ON graph_edges(repo_id);  -- v7
 ```
 
 **Por que tabelas separadas** (em vez de embutir em `chunks`):
@@ -1324,6 +1333,31 @@ mas agora cada uma pode apontar para um `project_dir` distinto onde o
 
 **Trade-off aceito**: maior superfície de teste; quatro streams no RRF quando L3 ativo (vs três hoje). Risco mitigado por toggles ortogonais que permitem A/B comparison local.
 
+### ADR-009 — Multi-repo graphify support (schema v7)
+
+**Contexto**: User has dozens of Java repositories, each with its own `graphify-out/` graph. All repos point to the same stropha database (distributed monorepo architecture). Need cross-repo graph queries (`find_callers`, `find_related`, etc.) without node ID collisions.
+
+**Decisão**:
+1. **Schema v7** adds `repo_id` column (FK to `repos` table) to both `graph_nodes` and `graph_edges` tables
+2. **Node ID prefixing**: All node IDs are prefixed with `{repo_id}:` before storage (e.g., repo_id=3, node "FooClass" becomes "3:FooClass")
+3. **Per-repo meta keys**: Staleness tracking uses suffixed keys like `last_loaded_mtime:3` in `graph_meta` table
+4. **Diff-load scoping**: INSERT/DELETE operations in `GraphifyLoader.load()` are scoped by `WHERE repo_id = ?` so loading repo A's graph doesn't touch repo B's data
+5. **Cross-repo queries by default**: Graph tools (`find_callers`, `find_related`, etc.) query across ALL repos without explicit filtering
+
+**Alternativas consideradas**:
+- **Separate databases per repo**: Rejected. Prevents cross-repo queries which are a key use case (tracing calls from service A to library B)
+- **Prefixing with repo path instead of numeric ID**: Rejected. Paths are long and variable; numeric IDs are compact and stable
+- **Global meta keys with repo-id encoding in value**: Rejected. Complicates parsing; suffixed keys are cleaner
+
+**Consequência**:
+- `GraphifyLoader` constructor accepts optional `repo_id` parameter
+- `Pipeline._refresh_graphify_mirror()` detects repo via `detect_repo()` + `register_repo()` before creating loader
+- `GraphNode` dataclass includes `repo_id` field; `_hydrate_node()` scopes chunk lookups by repo
+- `GraphVecLoader` already worked cross-repo (no changes needed)
+- 6 new tests in `test_graphify_loader.py` cover multi-repo scenarios
+
+**Trade-off aceito**: Slightly more complex schema migration; prefix stripping required when displaying node IDs to users. Mitigated by helper functions in retrieval layer.
+
 ---
 
 ## 18. Riscos
@@ -1404,13 +1438,19 @@ Todos retornam `{"graph_loaded": false, "message": …}` quando a tabela `graph_
 - **v4** (`storage/sqlite.py`): tabelas `graph_nodes`, `graph_edges`, `graph_meta` + 4 índices (`label`, `source_file`, `community_id`, `target+relation+confidence`, `source+relation+confidence`).
 - **v5**: colunas `graph_nodes.embedding` (BLOB float32) + `embedding_model` + `embedding_dim` para o stream `graph-vec` (Trilha A L3).
 - **v6** (Phase A incremental): tabela `files` keyed by `(repo_id, rel_path)` com `mtime`, `size_bytes`, `content_hash`, `last_chunk_count`, `last_enricher_id`, `last_embedder_model`. Métodos: `file_is_fresh()`, `upsert_file_meta()`, `delete_file_meta()`, `list_stale_files()`, `delete_chunks_by_repo_paths()`.
+- **v7** (multi-repo graphify): colunas `graph_nodes.repo_id` + `graph_edges.repo_id` (FK to `repos` table) + indices `idx_graph_nodes_repo_id`, `idx_graph_edges_repo_id`. Enables distributed monorepo architecture where multiple Java repositories share a single stropha index database. Node IDs prefixed with `{repo_id}:` for collision avoidance (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Per-repo staleness tracking via `graph_meta` keys like `last_loaded_mtime:3`.
 - `Storage.augment_fts_with_graph()` (`storage/sqlite.py`) — método retroativo L2: DELETE + INSERT na `fts_chunks` com community + node labels appendados ao `_fts_text()` legacy. Toggle: `STROPHA_GRAPH_FTS_AUGMENT=1` (default on). Idempotente.
 
 ### 21.3 Loader / pipeline integration
 
 - `src/stropha/ingest/graphify_loader.py` — idempotente, transacional, staleness por `mtime` vs `graph_meta.last_loaded_mtime`. Filtro por `STROPHA_GRAPH_CONFIDENCE` (default `EXTRACTED`).
-- `src/stropha/ingest/graph_vec_loader.py` — embed incremental de `graph_nodes.label` via o embedder ativo. Skip-fresh por `embedding_model`. ~30 s para 2K nós com fastembed/mxbai.
+  - **Multi-repo (v7)**: Accepts `repo_id` parameter. Node IDs prefixed with `{repo_id}:` for collision avoidance. Per-repo meta keys (e.g., `last_loaded_mtime:3`). Diff-load scoped by `WHERE repo_id = ?` so loading one repo's graph doesn't affect others.
+  - **`is_stale()`**: Checks per-repo mtime key when `repo_id` is set.
+  - **`stats()`**: Returns per-repo counts when `repo_id` is set, or aggregate across all repos otherwise.
+- `src/stropha/ingest/graph_vec_loader.py` — embed incremental de `graph_nodes.label` via o embedder ativo. Skip-fresh por `embedding_model`. ~30 s para 2K nós com fastembed/mxbai. Works cross-repo without changes (queries all nodes regardless of repo_id).
 - `Pipeline.run()` (`pipeline/pipeline.py::_refresh_graphify_mirror`) — ordem canônica post-index: GraphifyLoader → GraphVecLoader → `augment_fts_with_graph`. Invariante #3 do `CLAUDE.md §3`.
+  - **Multi-repo**: Calls `detect_repo()` + `register_repo()` to obtain `repo_id` before instantiating `GraphifyLoader(storage, repo_root, repo_id=repo_id)`.
+- `src/stropha/retrieval/graph.py` — `GraphNode` dataclass includes `repo_id` field. `_hydrate_node()` scopes chunk lookups by repo. Graph tools (`find_callers`, `find_related`, etc.) work cross-repo by default.
 
 ### 21.4 Hook installer (CLI + cross-repo v=3)
 
@@ -1457,3 +1497,21 @@ Delivered in commits `d2c5fb9`, `007d892`, `2ff2298`. Schema v6 (file-level dirt
 
 CLI flags added: `--full`, `--incremental`, `--since <sha>`.
 Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>`.
+
+### 21.9 Multi-repo graphify support (schema v7) — 2026-05-16
+
+Delivered for distributed monorepo architecture where multiple repositories with their own `graphify-out/` share a single stropha index database.
+
+| Component | Change | Effect |
+|---|---|---|
+| `storage/sqlite.py` | Schema v7: `graph_nodes.repo_id` + `graph_edges.repo_id` columns (FK to `repos`) + indexes | Multi-repo isolation at storage layer |
+| `ingest/graphify_loader.py` | `repo_id` parameter, node ID prefixing (`{repo_id}:FooClass`), per-repo meta keys, scoped diff-load | Load one repo's graph without affecting others |
+| `retrieval/graph.py` | `GraphNode.repo_id` field, `_hydrate_node()` scopes chunk lookups | Cross-repo queries return repo context |
+| `pipeline/pipeline.py` | `_refresh_graphify_mirror()` detects + registers repo before loader instantiation | Automatic repo_id detection |
+| `tests/unit/test_graphify_loader.py` | 6 new tests for multi-repo scenarios | Coverage for node prefixing, isolation, staleness, stats |
+
+**Key design decisions** (see ADR-009):
+- Node IDs prefixed with `{repo_id}:` to avoid collisions (repo_id=3, "FooClass" → "3:FooClass")
+- Per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`
+- Graph tools query ALL repos by default (cross-repo `find_callers`, `find_related`)
+- GraphVecLoader unchanged (already works cross-repo)

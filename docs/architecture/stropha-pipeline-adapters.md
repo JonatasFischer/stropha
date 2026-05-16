@@ -21,7 +21,7 @@ Cada **nó da pipeline** do stropha (walker, chunker, enricher, embedder, storag
 4. Auto-registra via decorator no import-time; descoberto por `stropha adapters list`.
 5. Pode ser substituído trocando uma string na config; mismatch contra estado persistido aciona re-processamento automático.
 
-Quando um stage tem complexidade interna (despachador + sub-implementações), ele **é** um sub-pipeline encapsulado em adapter, com sub-config aninhado mas igualmente visível. Hoje o `chunker` é o exemplo canônico (dispatcher → 6 chunkers por linguagem). No futuro, `retrieval` pode virar sub-pipeline (3 streams + RRF).
+Quando um stage tem complexidade interna (despachador + sub-implementações), ele **é** um sub-pipeline encapsulado em adapter, com sub-config aninhado mas igualmente visível. Hoje o `chunker` é o exemplo canônico (dispatcher → 6 chunkers por linguagem). O `retrieval` já é sub-pipeline (4 streams + RRF).
 
 Não há composição/chain entre adapters do MESMO stage. Um adapter por stage por vez. Adapters podem ser trocados a qualquer momento; o pipeline detecta drift e re-processa o necessário, com cache.
 
@@ -40,7 +40,7 @@ O stropha já tem 50% do padrão implementado, mas inconsistente:
 | enricher | ✗ inexistente | Phase 2 do roadmap mestre |
 | embedder | ✓ | `Embedder` protocol + 2 implementações (Voyage, local fastembed) |
 | storage | ✗ classe única | `storage/sqlite.py:Storage` sem protocol |
-| retrieval | ✗ classe única | `retrieval/search.py:SearchEngine` hardcoded 3-stream+RRF |
+| retrieval | ✓ sub-pipeline | `adapters/retrieval/hybrid_rrf.py` 4-stream+RRF |
 
 ### 1.2 Lacunas que justificam refatoração
 
@@ -73,7 +73,7 @@ O stropha já tem 50% do padrão implementado, mas inconsistente:
 | **enricher** | Transformar chunk antes do embed | (inexistente) | `noop`, `hierarchical`, `ollama`, `mlx`, `anthropic`, `openai` |
 | **embedder** | Texto → vetor | `voyage`, `local` (fastembed) | mesmo + `mlx`, `ollama-embeddings`, `openai` |
 | **storage** | Persistir + query | `sqlite-vec` (única) | mesmo + futuros `qdrant`, `pgvector`, `lancedb` |
-| **retrieval** | Query → top-k (sub-pipeline) | hybrid 3-stream + RRF (hardcoded) | `dense-only`, `bm25-only`, `hybrid-rrf` (default), `hybrid-rrf-rerank` |
+| **retrieval** | Query → top-k (sub-pipeline) | hybrid 4-stream + RRF | `dense-only`, `bm25-only`, `hybrid-rrf` (default), `hybrid-rrf-rerank` |
 
 ### 2.2 Visão arquitetural
 
@@ -1113,13 +1113,14 @@ pipeline:
 
 > Este apêndice é a forma compacta da `stropha adapters list` no HEAD atual. Reflete o que está em produção; quando adicionar um adapter novo, atualize esta tabela na mesma PR.
 
-### Walker (3)
+### Walker (4)
 
 | Adapter | Arquivo | Uso típico |
 |---|---|---|
 | `git-ls-files` (default) | `adapters/walker/git_ls_files.py` | Repos git padrão. Honra `.gitignore` + `.strophaignore`, fallback filesystem quando `git` falha. |
 | `filesystem` | `adapters/walker/filesystem.py` | Diretórios sem `.git/` (downloads, vendored deps, snapshots). Skipa caches padrão (`.venv`, `node_modules`, `__pycache__`, `dist`, `build`, …). |
 | `nested-git` | `adapters/walker/nested_git.py` | Monorepos com submódulos / vendored repos. Descobre `.git/` aninhados até `max_depth=4`, rebase paths para a raiz. |
+| `git-diff` | `adapters/walker/git_diff.py` | Indexação incremental baseada em `git diff`. Detecta arquivos modificados/adicionados/renomeados entre commits. |
 
 ### Chunker (1 dispatcher + 5 language sub-adapters)
 

@@ -113,6 +113,13 @@ class GraphifyLoader:
     The loader is conditional: if no graph file exists the loader simply
     reports ``is_stale() → False`` and ``load()`` is a no-op. This keeps
     stropha working in repos that have never run graphify.
+
+    Multi-repo support (schema v7):
+      Each repo's graph is isolated by ``repo_id``. Node IDs are prefixed
+      with ``{repo_id}:`` to avoid collisions when multiple repos share
+      the same index database. Example: repo_id=3, node "FooClass" becomes
+      "3:FooClass" in the database. Queries filter by repo_id and the
+      prefix is stripped when returning results to callers.
     """
 
     def __init__(
@@ -120,15 +127,22 @@ class GraphifyLoader:
         storage: Storage,
         repo_root: Path,
         *,
+        repo_id: int | None = None,
         graph_path: Path | None = None,
         confidence_filter: tuple[str, ...] | None = None,
     ) -> None:
         self._storage = storage
+        self._repo_id = repo_id  # None = legacy single-repo mode
+        self._repo_root = repo_root
         # Allow override (tests, --refresh-graph flag, custom out dir).
         self._graph_path = graph_path or self._resolve_graph_path(repo_root)
         self._confidence = confidence_filter or _resolve_confidence_filter(
             os.environ.get("STROPHA_GRAPH_CONFIDENCE")
         )
+
+    @property
+    def repo_id(self) -> int | None:
+        return self._repo_id
 
     # ------------------------------------------------------------------ paths
 
@@ -163,6 +177,8 @@ class GraphifyLoader:
 
         Compares file mtime with ``graph_meta.last_loaded_mtime``. Returns
         ``False`` when the graph is missing entirely (nothing to load).
+
+        For multi-repo mode (repo_id is set), checks the per-repo mtime key.
         """
         if not self.exists():
             return False
@@ -170,6 +186,7 @@ class GraphifyLoader:
             file_mtime = self._graph_path.stat().st_mtime
         except OSError:
             return False
+        # Pass the base key name; _get_meta() adds the repo suffix
         last_str = self._get_meta("last_loaded_mtime")
         if last_str is None:
             return True
@@ -178,6 +195,12 @@ class GraphifyLoader:
         except (TypeError, ValueError):
             return True
 
+    def _prefix_node_id(self, node_id: str) -> str:
+        """Prefix node_id with repo_id for multi-repo isolation."""
+        if self._repo_id is not None:
+            return f"{self._repo_id}:{node_id}"
+        return node_id
+
     # --------------------------------------------------------------------- io
 
     def load(self) -> LoadResult | None:
@@ -185,6 +208,12 @@ class GraphifyLoader:
 
         Returns ``None`` if the graph file does not exist. Otherwise returns
         a :class:`LoadResult` summarising the reload.
+
+        Multi-repo mode (schema v7):
+          When ``repo_id`` is set, node IDs are prefixed with ``{repo_id}:``
+          and stored with the repo_id foreign key. Queries in the diff-load
+          phase are scoped to this repo_id, so loading repo A's graph does
+          not delete repo B's nodes/edges.
         """
         if not self.exists():
             log.info("graphify_loader.missing", path=str(self._graph_path))
@@ -194,6 +223,7 @@ class GraphifyLoader:
             "graphify_loader.start",
             path=str(self._graph_path),
             confidence=list(self._confidence),
+            repo_id=self._repo_id,
         )
         try:
             payload = json.loads(self._graph_path.read_text(encoding="utf-8"))
@@ -227,12 +257,16 @@ class GraphifyLoader:
         # targeted INSERT OR REPLACE / DELETE statements instead of a
         # global DELETE + INSERT. On no-op runs this is a no-write
         # operation; on partial updates only the touched rows move.
+        #
+        # Multi-repo mode: scope all queries by repo_id so loading one
+        # repo's graph doesn't touch another repo's data.
         cur.execute("BEGIN IMMEDIATE")
         try:
             # ---- nodes diff ---------------------------------------------
+            # Build incoming rows with prefixed node_id and repo_id column
             incoming_node_rows = [
                 (
-                    str(n["id"]),
+                    self._prefix_node_id(str(n["id"])),
                     str(n.get("label") or n["id"]),
                     n.get("file_type"),
                     n.get("source_file"),
@@ -241,16 +275,29 @@ class GraphifyLoader:
                     community_labels.get(
                         str(node_to_community.get(str(n["id"]))), None
                     ) if node_to_community.get(str(n["id"])) is not None else None,
+                    self._repo_id,  # repo_id column (schema v7)
                 )
                 for n in nodes
                 if "id" in n
             ]
             incoming_node_ids = {r[0] for r in incoming_node_rows}
-            existing_node_ids = {
-                row[0] for row in cur.execute(
-                    "SELECT node_id FROM graph_nodes"
-                ).fetchall()
-            }
+
+            # Fetch existing node IDs scoped to this repo
+            if self._repo_id is not None:
+                existing_node_ids = {
+                    row[0] for row in cur.execute(
+                        "SELECT node_id FROM graph_nodes WHERE repo_id = ?",
+                        (self._repo_id,),
+                    ).fetchall()
+                }
+            else:
+                # Legacy mode: all nodes without repo_id
+                existing_node_ids = {
+                    row[0] for row in cur.execute(
+                        "SELECT node_id FROM graph_nodes WHERE repo_id IS NULL"
+                    ).fetchall()
+                }
+
             nodes_to_delete = existing_node_ids - incoming_node_ids
             if nodes_to_delete:
                 cur.executemany(
@@ -265,8 +312,8 @@ class GraphifyLoader:
                 cur.executemany(
                     """INSERT OR REPLACE INTO graph_nodes
                        (node_id, label, file_type, source_file, source_location,
-                        community_id, community_label)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        community_id, community_label, repo_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     incoming_node_rows,
                 )
             nodes_added = len(incoming_node_ids - existing_node_ids)
@@ -289,9 +336,10 @@ class GraphifyLoader:
                     continue
                 source_file_norm = e.get("source_file") or ""
                 source_location_norm = e.get("source_location") or ""
+                # Prefix source and target node IDs for multi-repo isolation
                 row = (
-                    str(e["source"]),
-                    str(e["target"]),
+                    self._prefix_node_id(str(e["source"])),
+                    self._prefix_node_id(str(e["target"])),
                     str(e.get("relation") or ""),
                     conf,
                     e.get("confidence_score"),
@@ -299,6 +347,7 @@ class GraphifyLoader:
                     source_file_norm,
                     source_location_norm,
                     e.get("weight"),
+                    self._repo_id,  # repo_id column (schema v7)
                 )
                 edge_rows.append(row)
                 # Primary key matches schema v4: (source, target, relation,
@@ -307,17 +356,25 @@ class GraphifyLoader:
                 edge_keys.add((row[0], row[1], row[2], row[6], row[7]))
                 edges_loaded += 1
 
-            existing_edge_keys = {
-                # Coerce NULL → "" on the existing side too, so legacy
-                # rows from pre-Phase-C loads (which may have stored
-                # actual NULL) compare correctly with the new
-                # normalised incoming rows.
-                (r[0], r[1], r[2], r[3] or "", r[4] or "")
-                for r in cur.execute(
-                    """SELECT source, target, relation, source_file, source_location
-                       FROM graph_edges"""
-                ).fetchall()
-            }
+            # Fetch existing edge keys scoped to this repo
+            if self._repo_id is not None:
+                existing_edge_keys = {
+                    (r[0], r[1], r[2], r[3] or "", r[4] or "")
+                    for r in cur.execute(
+                        """SELECT source, target, relation, source_file, source_location
+                           FROM graph_edges WHERE repo_id = ?""",
+                        (self._repo_id,),
+                    ).fetchall()
+                }
+            else:
+                existing_edge_keys = {
+                    (r[0], r[1], r[2], r[3] or "", r[4] or "")
+                    for r in cur.execute(
+                        """SELECT source, target, relation, source_file, source_location
+                           FROM graph_edges WHERE repo_id IS NULL"""
+                    ).fetchall()
+                }
+
             edges_to_delete = existing_edge_keys - edge_keys
             if edges_to_delete:
                 cur.executemany(
@@ -343,20 +400,22 @@ class GraphifyLoader:
                 cur.executemany(
                     """INSERT OR REPLACE INTO graph_edges
                        (source, target, relation, confidence, confidence_score,
-                        context, source_file, source_location, weight)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        context, source_file, source_location, weight, repo_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     edge_rows,
                 )
             edges_added = len(edge_keys - existing_edge_keys)
 
-            # ---- meta (regenerate; 4 rows, no point diffing) ------------
+            # ---- meta (regenerate; use per-repo keys in multi-repo mode) --
             now_iso = datetime.now(UTC).isoformat()
             file_mtime = self._graph_path.stat().st_mtime
+            # Use per-repo meta keys when repo_id is set
+            suffix = f":{self._repo_id}" if self._repo_id is not None else ""
             for k, v in (
-                ("last_loaded_at", now_iso),
-                ("last_loaded_mtime", str(file_mtime)),
-                ("graph_path", str(self._graph_path)),
-                ("confidence_filter", ",".join(self._confidence)),
+                (f"last_loaded_at{suffix}", now_iso),
+                (f"last_loaded_mtime{suffix}", str(file_mtime)),
+                (f"graph_path{suffix}", str(self._graph_path)),
+                (f"confidence_filter{suffix}", ",".join(self._confidence)),
             ):
                 cur.execute(
                     "INSERT OR REPLACE INTO graph_meta(key, value) VALUES(?, ?)",
@@ -392,22 +451,56 @@ class GraphifyLoader:
         """Return a summary suitable for ``Storage.stats()['graph']``.
 
         ``None`` when the loader has never populated the tables.
+
+        Multi-repo mode: reports stats for this repo only when repo_id is set,
+        or aggregate stats when repo_id is None.
         """
         cur = self._storage._conn.cursor()
         last_loaded = self._get_meta("last_loaded_at")
         if last_loaded is None:
             return None
-        n_nodes = cur.execute("SELECT COUNT(*) AS n FROM graph_nodes").fetchone()["n"]
-        n_edges = cur.execute("SELECT COUNT(*) AS n FROM graph_edges").fetchone()["n"]
-        by_conf = {
-            row["confidence"]: int(row["n"])
-            for row in cur.execute(
-                "SELECT confidence, COUNT(*) AS n FROM graph_edges GROUP BY confidence"
-            ).fetchall()
-        }
-        n_communities = cur.execute(
-            "SELECT COUNT(DISTINCT community_id) AS n FROM graph_nodes WHERE community_id IS NOT NULL"
-        ).fetchone()["n"]
+
+        # Scope queries by repo_id when set
+        if self._repo_id is not None:
+            n_nodes = cur.execute(
+                "SELECT COUNT(*) AS n FROM graph_nodes WHERE repo_id = ?",
+                (self._repo_id,),
+            ).fetchone()["n"]
+            n_edges = cur.execute(
+                "SELECT COUNT(*) AS n FROM graph_edges WHERE repo_id = ?",
+                (self._repo_id,),
+            ).fetchone()["n"]
+            by_conf = {
+                row["confidence"]: int(row["n"])
+                for row in cur.execute(
+                    """SELECT confidence, COUNT(*) AS n FROM graph_edges
+                       WHERE repo_id = ? GROUP BY confidence""",
+                    (self._repo_id,),
+                ).fetchall()
+            }
+            n_communities = cur.execute(
+                """SELECT COUNT(DISTINCT community_id) AS n FROM graph_nodes
+                   WHERE community_id IS NOT NULL AND repo_id = ?""",
+                (self._repo_id,),
+            ).fetchone()["n"]
+        else:
+            # Aggregate stats across all repos
+            n_nodes = cur.execute(
+                "SELECT COUNT(*) AS n FROM graph_nodes"
+            ).fetchone()["n"]
+            n_edges = cur.execute(
+                "SELECT COUNT(*) AS n FROM graph_edges"
+            ).fetchone()["n"]
+            by_conf = {
+                row["confidence"]: int(row["n"])
+                for row in cur.execute(
+                    "SELECT confidence, COUNT(*) AS n FROM graph_edges GROUP BY confidence"
+                ).fetchall()
+            }
+            n_communities = cur.execute(
+                "SELECT COUNT(DISTINCT community_id) AS n FROM graph_nodes WHERE community_id IS NOT NULL"
+            ).fetchone()["n"]
+
         return {
             "nodes": int(n_nodes),
             "edges_total": int(n_edges),
@@ -420,12 +513,15 @@ class GraphifyLoader:
                 if self._get_meta("confidence_filter")
                 else list(self._confidence)
             ),
+            "repo_id": self._repo_id,
         }
 
     # ------------------------------------------------------------------ helpers
 
     def _get_meta(self, key: str) -> str | None:
+        """Get a meta value, using per-repo key suffix when repo_id is set."""
+        suffix = f":{self._repo_id}" if self._repo_id is not None else ""
         row = self._storage._conn.execute(
-            "SELECT value FROM graph_meta WHERE key = ?", (key,)
+            "SELECT value FROM graph_meta WHERE key = ?", (f"{key}{suffix}",)
         ).fetchone()
         return row["value"] if row else None

@@ -46,6 +46,7 @@ class GraphNode:
     source_location: str | None
     community_id: int | None
     community_label: str | None
+    repo_id: int | None = None  # schema v7: multi-repo support
     chunk_rel_path: str | None = None
     chunk_start_line: int | None = None
     chunk_end_line: int | None = None
@@ -58,6 +59,7 @@ class GraphNode:
             "file_type": self.file_type,
             "source_file": self.source_file,
             "source_location": self.source_location,
+            "repo_id": self.repo_id,
             "community": (
                 {"id": self.community_id, "label": self.community_label}
                 if self.community_id is not None
@@ -178,24 +180,46 @@ def _hydrate_node(storage: Storage, row: sqlite3.Row) -> GraphNode:
     """Take a graph_nodes row and (when possible) attach a chunk snippet."""
     line = _parse_location_to_line(row["source_location"])
     rel_path = row["source_file"]
+    # Get repo_id if present in the row (schema v7)
+    repo_id = row["repo_id"] if "repo_id" in row.keys() else None
     chunk = None
     if rel_path:
         # Pick the chunk whose [start_line, end_line] contains the node's line.
+        # When repo_id is available, scope chunk lookup to that repo to avoid
+        # cross-repo collisions on identical file paths.
         if line is not None:
-            chunk = storage._conn.execute(
-                """SELECT rel_path, start_line, end_line, content
-                   FROM chunks
-                   WHERE rel_path = ? AND start_line <= ? AND end_line >= ?
-                   ORDER BY (end_line - start_line) ASC LIMIT 1""",
-                (rel_path, line, line),
-            ).fetchone()
+            if repo_id is not None:
+                chunk = storage._conn.execute(
+                    """SELECT rel_path, start_line, end_line, content
+                       FROM chunks
+                       WHERE rel_path = ? AND repo_id = ?
+                         AND start_line <= ? AND end_line >= ?
+                       ORDER BY (end_line - start_line) ASC LIMIT 1""",
+                    (rel_path, repo_id, line, line),
+                ).fetchone()
+            else:
+                chunk = storage._conn.execute(
+                    """SELECT rel_path, start_line, end_line, content
+                       FROM chunks
+                       WHERE rel_path = ? AND start_line <= ? AND end_line >= ?
+                       ORDER BY (end_line - start_line) ASC LIMIT 1""",
+                    (rel_path, line, line),
+                ).fetchone()
         # Fallback: file-level chunk
         if chunk is None:
-            chunk = storage._conn.execute(
-                """SELECT rel_path, start_line, end_line, content
-                   FROM chunks WHERE rel_path = ? ORDER BY start_line ASC LIMIT 1""",
-                (rel_path,),
-            ).fetchone()
+            if repo_id is not None:
+                chunk = storage._conn.execute(
+                    """SELECT rel_path, start_line, end_line, content
+                       FROM chunks WHERE rel_path = ? AND repo_id = ?
+                       ORDER BY start_line ASC LIMIT 1""",
+                    (rel_path, repo_id),
+                ).fetchone()
+            else:
+                chunk = storage._conn.execute(
+                    """SELECT rel_path, start_line, end_line, content
+                       FROM chunks WHERE rel_path = ? ORDER BY start_line ASC LIMIT 1""",
+                    (rel_path,),
+                ).fetchone()
     snippet = None
     if chunk and chunk["content"]:
         snippet = chunk["content"][:400]
@@ -207,6 +231,7 @@ def _hydrate_node(storage: Storage, row: sqlite3.Row) -> GraphNode:
         source_location=row["source_location"],
         community_id=row["community_id"],
         community_label=row["community_label"],
+        repo_id=repo_id,
         chunk_rel_path=chunk["rel_path"] if chunk else None,
         chunk_start_line=chunk["start_line"] if chunk else None,
         chunk_end_line=chunk["end_line"] if chunk else None,

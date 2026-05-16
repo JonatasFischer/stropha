@@ -42,7 +42,11 @@ log = get_logger(__name__)
 #     Lets `Pipeline._index_files()` skip chunking entirely when a file is
 #     fresh — saves tree-sitter parse + chunk-fresh probes for typical
 #     no-op `stropha index` invocations.
-SCHEMA_VERSION = 6
+# v7: multi-repo graphify support. Adds `repo_id` to `graph_nodes` and
+#     `graph_edges` tables to allow multiple repos with their own graphify
+#     graphs to share a single stropha index. Node IDs are prefixed with
+#     repo_id to avoid collisions across repos.
+SCHEMA_VERSION = 7
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -387,6 +391,22 @@ class Storage:
         # these columns existed.
         self._add_column_if_missing("files", "last_enricher_id", "TEXT")
         self._add_column_if_missing("files", "last_embedder_model", "TEXT")
+
+        # v7: multi-repo graphify support. Add repo_id to graph_nodes and
+        # graph_edges so multiple repos can share a single index without
+        # node ID collisions. Foreign key to repos(id).
+        self._add_column_if_missing(
+            "graph_nodes", "repo_id", "INTEGER REFERENCES repos(id)"
+        )
+        self._add_column_if_missing(
+            "graph_edges", "repo_id", "INTEGER REFERENCES repos(id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_graph_nodes_repo ON graph_nodes(repo_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);"
+        )
 
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
