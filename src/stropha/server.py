@@ -50,6 +50,7 @@ from .retrieval.graph import (
     has_rationale_edges,
     trace_feature as graph_trace_feature,
 )
+from .retrieval.smart_search import SmartSearchResult, smart_search
 from .retrieval.graph import (
     find_rationale as graph_find_rationale,
 )
@@ -409,6 +410,84 @@ def search_code(
         query=query,
         facets=facets,
     )
+
+
+# ---- smart search (query routing) ------------------------------------------
+
+class SmartSearchResponse(BaseModel):
+    """Response from smart_search with routing metadata."""
+    results: list[SearchResult]
+    total_candidates: int
+    query: str
+    intent: str = Field(description="Detected query intent (find_callers, find_tests_for, search_code, etc.)")
+    symbol: str | None = Field(default=None, description="Extracted symbol name, if any")
+    tool_used: str = Field(description="The actual tool invoked (find_callers, search_code, etc.)")
+    confidence: float = Field(description="Routing confidence (0.0-1.0)")
+    graph_available: bool = Field(default=True, description="Whether the graph is loaded")
+
+
+@mcp.tool(
+    title="Smart search",
+    description=(
+        "Intelligent search with automatic query routing. Analyzes the query "
+        "intent and dispatches to the best tool:\n"
+        "- 'what calls X' → find_callers\n"
+        "- 'tests for X' → find_tests_for\n"
+        "- 'what relates to X' → find_related\n"
+        "- 'trace feature X' → trace_feature\n"
+        "- Everything else → hybrid search\n\n"
+        "Use this when you're not sure which tool to use. Returns results "
+        "with metadata about which tool was used and why."
+    ),
+)
+def smart_search_tool(
+    query: str,
+    top_k: int = 10,
+    use_llm_router: bool = False,
+    *,
+    ctx: Context,
+) -> SmartSearchResponse:
+    """Smart search with automatic query routing.
+    
+    Args:
+        query: Natural-language question or technical terms.
+        top_k: 1–30. Default 10.
+        use_llm_router: If True, use LLM for ambiguous queries (slower but more accurate).
+    """
+    app = _ctx(ctx)
+    top_k = max(1, min(top_k, 30))
+    
+    try:
+        result = smart_search(
+            query,
+            app.storage,
+            app.embedder,
+            top_k=top_k,
+            use_router=True,
+            use_llm_router=use_llm_router,
+        )
+        return SmartSearchResponse(
+            results=[_to_result(h) for h in result.hits],
+            total_candidates=len(result.hits),
+            query=query,
+            intent=result.routed.intent.value,
+            symbol=result.routed.symbol,
+            tool_used=result.tool_used,
+            confidence=result.routed.confidence,
+            graph_available=graph_loaded(app.storage),
+        )
+    except StrophaError as exc:
+        log.warning("mcp.smart_search.error", error=str(exc))
+        return SmartSearchResponse(
+            results=[],
+            total_candidates=0,
+            query=query,
+            intent="search_code",
+            symbol=None,
+            tool_used="search_code",
+            confidence=0.0,
+            graph_available=graph_loaded(app.storage),
+        )
 
 
 @mcp.tool(
