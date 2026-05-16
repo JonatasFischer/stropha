@@ -440,9 +440,9 @@ Query routing classifies intent ("what calls X" → `find_callers`, "tests for X
 
 | Feature | Effort | Expected Gain | Status |
 |---------|--------|---------------|--------|
-| Contextual enricher (full implementation) | 3d | +25% conceptual | scaffolded |
+| Contextual enricher (full implementation) | 3d | +25% conceptual | **done** |
 
-Prepend LLM-generated context to each chunk before embedding. The context describes what the chunk does and how it fits in the file. Generated once at index time, stored in `embedding_text`. Anthropic reported 49% reduction in retrieval failures.
+Prepend LLM-generated context to each chunk before embedding. The context describes what the chunk does and how it fits in the file. Generated once at index time, stored in `embedding_text`. Use `--enricher contextual` to enable. Anthropic reported 49% reduction in retrieval failures.
 
 **Priority 3 — HyDE Improvements (~1 day):**
 
