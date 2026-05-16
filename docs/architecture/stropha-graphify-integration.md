@@ -1403,6 +1403,7 @@ Todos retornam `{"graph_loaded": false, "message": …}` quando a tabela `graph_
 
 - **v4** (`storage/sqlite.py`): tabelas `graph_nodes`, `graph_edges`, `graph_meta` + 4 índices (`label`, `source_file`, `community_id`, `target+relation+confidence`, `source+relation+confidence`).
 - **v5**: colunas `graph_nodes.embedding` (BLOB float32) + `embedding_model` + `embedding_dim` para o stream `graph-vec` (Trilha A L3).
+- **v6** (Phase A incremental): tabela `files` keyed by `(repo_id, rel_path)` com `mtime`, `size_bytes`, `content_hash`, `last_chunk_count`, `last_enricher_id`, `last_embedder_model`. Métodos: `file_is_fresh()`, `upsert_file_meta()`, `delete_file_meta()`, `list_stale_files()`, `delete_chunks_by_repo_paths()`.
 - `Storage.augment_fts_with_graph()` (`storage/sqlite.py`) — método retroativo L2: DELETE + INSERT na `fts_chunks` com community + node labels appendados ao `_fts_text()` legacy. Toggle: `STROPHA_GRAPH_FTS_AUGMENT=1` (default on). Idempotente.
 
 ### 21.3 Loader / pipeline integration
@@ -1443,3 +1444,16 @@ Bake > env vars de commit-time. Razão: hooks rodam num contexto shell minimalis
 - **L4 GraphRAG** (community summaries via LLM) — bloqueado em golden dataset.
 
 Quando esses itens forem priorizados, adicione uma linha aqui referenciando o commit/PR de delivery.
+
+### 21.8 Incremental indexing (Phase A/B/C) — 2026-05-15
+
+Delivered in commits `d2c5fb9`, `007d892`, `2ff2298`. Schema v6 (file-level dirty cache) + git-diff aware ingestion + rename-resilient chunk_id.
+
+| Phase | Commit | Effect on hook / GraphifyLoader |
+|---|---|---|
+| **A** | `d2c5fb9` | `files` table caches `(mtime, size, content_hash, enricher_id, embedder_model)` per file. `file_is_fresh()` short-circuits chunking. 10x faster no-op `stropha index`. |
+| **B** | `007d892` | Hook v=4 passes `--incremental`. Walker uses `git diff --name-status <last_indexed_sha>..HEAD`. Only touched files visit chunker/embedder. `FileDelta` dataclass routes add/modify/delete/rename actions. Auto-fallback to full walk when no checkpoint. |
+| **C** | `2ff2298` | `Storage.rename_chunks()` recomputes `chunk_id` and FTS5 rows → zero re-embed cost for renames. `GraphifyLoader` diff-loads graph.json (deltas only, ~50ms → <5ms for no-op reload). |
+
+CLI flags added: `--full`, `--incremental`, `--since <sha>`.
+Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>`.

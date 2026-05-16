@@ -34,6 +34,7 @@ The original development target is the sibling **Mimoria** repository at `../mim
 | v3 | `chunks.embedding_text` + `chunks.enricher_id` + `enrichments` cache | drift detection via enricher_id |
 | v4 | `graph_nodes` + `graph_edges` + `graph_meta` | graphify mirror (RFC §1.5a) |
 | v5 | `graph_nodes.embedding` + `embedding_model` + `embedding_dim` | graph-vec retrieval stream (Trilha A L3) |
+| v6 | `files` table (repo_id, rel_path, mtime, size_bytes, content_hash, last_enricher_id, last_embedder_model) | file-level dirty cache for incremental indexing (Phase A) |
 
 All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREATE TABLE IF NOT EXISTS`). Legacy NULL `enricher_id` is treated as `'noop'` so v1/v2 dbs upgrade without full re-embed.
 
@@ -72,7 +73,7 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 | Command | Purpose |
 |---|---|
-| `stropha index [--repo … / --manifest …] [--rebuild] [--enricher … --embedder …]` | Run the indexing pipeline |
+| `stropha index [--repo … / --manifest …] [--rebuild] [--full / --incremental] [--since <sha>] [--enricher … --embedder …]` | Run the indexing pipeline (incremental by default when checkpoint exists) |
 | `stropha search "<query>" [--top-k N]` | Hybrid retrieval, prints top-K |
 | `stropha stats` | Index metadata: chunks, models, repos, graphify mirror status |
 | `stropha pipeline {show,validate}` | Inspect / probe the resolved adapter composition |
@@ -106,12 +107,13 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `STROPHA_HOOK_NO_GRAPHIFY=1` | unset | Skip the graphify step inside the hook |
 | `STROPHA_HOOK_PROJECT_DIR` | baked / `$TOPLEVEL` | `uv run --directory` target (cross-repo) |
 | `STROPHA_HOOK_INDEX_PATH` | baked / `.env` | Per-repo `STROPHA_INDEX_PATH` for the hook |
+| `STROPHA_RENAME_THRESHOLD` | `80` | Git rename detection similarity threshold (0-100). Higher = stricter match. |
 
-Cross-repo hooks (v=3) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override.
+Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (334 unit tests, ~5s)
+### 2.6 Test inventory (383 unit tests, ~8s)
 
-Per file: `test_chunker` 8 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_meta` 13 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 19 · `test_hook_install` 23 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_multirepo` 8 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
+Per file: `test_chunker` 8 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 
 ## 3. Key invariants (do NOT break)
 
@@ -376,8 +378,18 @@ Phase 4 — Escala:
       backend pinned to `BAAI/bge-m3`, the recommended multilingual
       local fallback per spec §15.
 
-**Total suite: 334 tests, all green. 5 enrichers, 4 retrieval streams,
-3 walkers, 3 embedders, 10 MCP tools, 8 CLI commands.**
+Incremental indexing (Phase A/B/C):
+- [x] **Schema v6 — file-level dirty cache** — `files` table stores
+      `(mtime, size_bytes, content_hash, enricher_id, embedder_model)` per
+      file for O(1) freshness check. 10x faster no-op index runs.
+- [x] **Git-diff aware ingestion** — `GitDiffWalker` + `FileDelta` model.
+      Hook v=4 passes `--incremental`. Only touched files visit chunker.
+- [x] **Rename-resilient chunk_id** — `Storage.rename_chunks()` recomputes
+      chunk_id + FTS5 rows. Zero re-embed cost for renames.
+- [x] **GraphifyLoader diff-load** — deltas only, not full DELETE+INSERT.
+
+**Total suite: 383 tests, all green. 5 enrichers, 4 retrieval streams,
+4 walkers, 3 embedders, 10 MCP tools, 8 CLI commands.**
 
 ### Exit criteria status
 

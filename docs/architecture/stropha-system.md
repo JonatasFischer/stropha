@@ -15,7 +15,7 @@ Documento de design técnico para um sistema de Retrieval-Augmented Generation (
 >
 > **Diferido por política local-only**: Voyage `rerank-2.5`, Contextual Retrieval (Anthropic), enrichers `anthropic`/`openai`, storage `qdrant`/`pgvector`, deploy remoto / multi-tenant / Web UI.
 >
-> Esquema SQLite atual: v5. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF.
+> Esquema SQLite atual: v6. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF; v6 adiciona tabela `files` para cache incremental file-level (Phase A).
 
 ---
 
@@ -632,6 +632,20 @@ Edições não-commitadas vivem em "overlay" em RAM. Queries consultam overlay +
 ### 8.5 Backfill de novos campos
 
 Schema migrations + lazy backfill: adicionar coluna nullable, preencher em background sem bloquear queries.
+
+### 8.6 Incremental indexing delivery (Phase A/B/C)
+
+> **Status:** Implemented (2026-05-15)
+
+| Phase | Schema | Delivery |
+|---|---|---|
+| **A** | v6 (`files` table) | File-level dirty cache keyed by `(repo_id, rel_path)` storing `mtime`, `size_bytes`, `content_hash`, `last_enricher_id`, `last_embedder_model`. 10x faster no-op runs (14.7s → 1.4s empirically). `Storage.file_is_fresh()` + `upsert_file_meta()`. |
+| **B** | — | Git-diff aware ingestion. `git diff --name-status <last_indexed_sha>..HEAD` drives the walker; only touched files re-chunked/embedded. `FileDelta` dataclass with `action: add|modify|delete|rename`. Hook v=4 passes `--incremental`. Auto-fallback to full walk when no checkpoint. |
+| **C** | — | Rename-resilient `chunk_id`. `Storage.rename_chunks()` recomputes `chunk_id` via `make_chunk_id(new_path, ...)` + regenerates FTS5 rows. Zero re-embed cost for renames. `GraphifyLoader` diff-loads (deltas only, not full DELETE+INSERT). |
+
+CLI flags: `--full` (force full walk), `--incremental` (force diff mode, errors if no checkpoint), `--since <sha>` (override checkpoint).
+
+Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>` sensitivity.
 
 ---
 
