@@ -234,8 +234,19 @@ def index(
 def search(
     query: str = typer.Argument(..., help="Natural-language or symbol query."),
     top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=50),
+    recursive: bool = typer.Option(
+        False,
+        "--recursive", "-r",
+        help="Enable auto-merging of sibling and adjacent chunks.",
+    ),
 ) -> None:
     """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF)."""
+    import os
+    
+    # Set env var to enable recursive retrieval for this search
+    if recursive:
+        os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
+    
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -244,6 +255,10 @@ def search(
     except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+    finally:
+        # Clean up env var
+        if recursive:
+            os.environ.pop("STROPHA_RECURSIVE_RETRIEVAL", None)
 
     if not hits:
         console.print("[yellow]No results.[/yellow]")

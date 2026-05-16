@@ -129,3 +129,44 @@ class TestApplyFilters:
         hits = [_make_hit(language="python")]
         result = _apply_filters(hits, language=["java"])
         assert result == []
+
+
+class TestFacetCounts:
+    """Tests for FacetCounts model in search responses."""
+
+    def test_facet_counts_model_defaults_to_empty_dicts(self) -> None:
+        from stropha.server import FacetCounts
+
+        facets = FacetCounts()
+        assert facets.language == {}
+        assert facets.kind == {}
+        assert facets.repo == {}
+
+    def test_facet_counts_model_accepts_values(self) -> None:
+        from stropha.server import FacetCounts
+
+        facets = FacetCounts(
+            language={"python": 10, "java": 5},
+            kind={"function": 8, "class": 7},
+            repo={"github.com/foo/bar": 15},
+        )
+        assert facets.language["python"] == 10
+        assert facets.kind["function"] == 8
+        assert facets.repo["github.com/foo/bar"] == 15
+
+    def test_search_response_facets_optional(self) -> None:
+        from stropha.server import SearchResponse
+
+        # Without facets
+        resp = SearchResponse(results=[], total_candidates=0, query="test")
+        assert resp.facets is None
+
+        # With facets
+        from stropha.server import FacetCounts
+
+        facets = FacetCounts(language={"python": 5})
+        resp_with = SearchResponse(
+            results=[], total_candidates=0, query="test", facets=facets
+        )
+        assert resp_with.facets is not None
+        assert resp_with.facets.language == {"python": 5}

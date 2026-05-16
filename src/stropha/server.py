@@ -182,12 +182,33 @@ class SearchResult(BaseModel):
     )
 
 
+class FacetCounts(BaseModel):
+    """Counts per facet dimension, computed from search results."""
+
+    language: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of results per language (e.g. {'python': 15, 'java': 8}).",
+    )
+    kind: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of results per chunk kind (e.g. {'method': 20, 'class': 5}).",
+    )
+    repo: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of results per repository.",
+    )
+
+
 class SearchResponse(BaseModel):
     results: list[SearchResult]
     total_candidates: int = Field(
         description="Total candidates considered before fusion (sum of dense + sparse top-50)."
     )
     query: str
+    facets: FacetCounts | None = Field(
+        default=None,
+        description="Facet counts when include_facets=True. Shows distribution by language, kind, repo.",
+    )
 
 
 class OutlineEntry(BaseModel):
@@ -301,7 +322,9 @@ def _apply_filters(
         "Hybrid semantic + lexical search over the indexed codebase. "
         "Use for queries like 'where is X', 'how does Y work', "
         "'show examples of Z'. For an exact symbol name, prefer get_symbol. "
-        "Supports optional filters: language, path_prefix, kind, exclude_tests."
+        "Supports optional filters: language, path_prefix, kind, exclude_tests. "
+        "Set include_facets=True to get counts by language/kind/repo. "
+        "Set recursive=True to auto-merge sibling and adjacent chunks."
     ),
 )
 def search_code(
@@ -311,6 +334,8 @@ def search_code(
     path_prefix: str | None = None,
     kind: list[str] | None = None,
     exclude_tests: bool = False,
+    include_facets: bool = False,
+    recursive: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -324,20 +349,36 @@ def search_code(
         path_prefix: Filter by path prefix, e.g. "backend/src/".
         kind: Filter by chunk kind(s), e.g. ["method", "class", "function"].
         exclude_tests: If True, exclude test files from results.
+        include_facets: If True, include facet counts (language, kind, repo distribution).
+        recursive: If True, auto-merge sibling chunks (same parent) and adjacent chunks.
     """
+    import os
+    
     app = _ctx(ctx)
     top_k = max(1, min(top_k, 30))
-    
+
+    # Enable recursive retrieval for this search if requested
+    prev_recursive = os.environ.get("STROPHA_RECURSIVE_RETRIEVAL")
+    if recursive:
+        os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
+
     # Fetch more candidates when filtering to ensure we get enough results
     has_filters = any([language, path_prefix, kind, exclude_tests])
     fetch_k = top_k * 3 if has_filters else top_k
-    
+
     try:
         hits = app.search_engine.search(query, top_k=fetch_k)
     except StrophaError as exc:
         log.warning("mcp.search_code.error", error=str(exc))
-        return SearchResponse(results=[], total_candidates=0, query=query)
-    
+        return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
+    finally:
+        # Restore previous env var state
+        if recursive:
+            if prev_recursive is None:
+                os.environ.pop("STROPHA_RECURSIVE_RETRIEVAL", None)
+            else:
+                os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = prev_recursive
+
     # Apply filters
     if has_filters:
         hits = _apply_filters(
@@ -347,14 +388,26 @@ def search_code(
             kind=kind,
             exclude_tests=exclude_tests,
         )
-    
+
+    # Compute facets before truncating (on filtered results)
+    facets: FacetCounts | None = None
+    if include_facets and hits:
+        chunk_ids = [h.chunk_id for h in hits]
+        facet_data = app.storage.compute_facets(chunk_ids)
+        facets = FacetCounts(
+            language=facet_data["language"],
+            kind=facet_data["kind"],
+            repo=facet_data["repo"],
+        )
+
     # Truncate to requested top_k
     hits = hits[:top_k]
-    
+
     return SearchResponse(
         results=[_to_result(h) for h in hits],
         total_candidates=len(hits),
         query=query,
+        facets=facets,
     )
 
 

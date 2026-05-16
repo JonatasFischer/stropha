@@ -286,3 +286,95 @@ def test_backfill_refuses_when_paths_dont_match(tmp_path: Path) -> None:
     n = s.backfill_chunks_to_repo(rid, sample_root=tmp_path)
     assert n == 0
     assert s.count_chunks_without_repo() == 1
+
+
+# ---- faceted search tests ----
+
+
+def _make_chunk_with_lang(
+    chunk_id: str,
+    rel_path: str,
+    content: str,
+    language: str = "java",
+    kind: str = "method",
+) -> Chunk:
+    return Chunk(
+        chunk_id=chunk_id,
+        rel_path=rel_path,
+        language=language,
+        kind=kind,
+        symbol=None,
+        start_line=1,
+        end_line=10,
+        content=content,
+        content_hash=chunk_id,
+    )
+
+
+def test_compute_facets_full_index(tmp_path: Path) -> None:
+    """compute_facets(None) returns counts for entire index."""
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+
+    # Insert chunks with different languages and kinds
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:a", "Foo.java", "class Foo", "java", "class"),
+        _vec(0), "m", 4,
+    )
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:b", "Bar.java", "void bar()", "java", "method"),
+        _vec(1), "m", 4,
+    )
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:c", "baz.py", "def baz():", "python", "function"),
+        _vec(2), "m", 4,
+    )
+    s.commit()
+
+    facets = s.compute_facets(None)
+
+    assert facets["language"] == {"java": 2, "python": 1}
+    assert facets["kind"] == {"class": 1, "method": 1, "function": 1}
+    assert "(local)" in facets["repo"]  # no repo assigned
+
+
+def test_compute_facets_for_specific_chunks(tmp_path: Path) -> None:
+    """compute_facets(chunk_ids) returns counts only for those chunks."""
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:a", "Foo.java", "class Foo", "java", "class"),
+        _vec(0), "m", 4,
+    )
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:b", "Bar.java", "void bar()", "java", "method"),
+        _vec(1), "m", 4,
+    )
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:c", "baz.py", "def baz():", "python", "function"),
+        _vec(2), "m", 4,
+    )
+    s.commit()
+
+    # Only get facets for Java chunks
+    facets = s.compute_facets(["sha256:a", "sha256:b"])
+
+    assert facets["language"] == {"java": 2}
+    assert facets["kind"] == {"class": 1, "method": 1}
+
+
+def test_compute_facets_empty_list(tmp_path: Path) -> None:
+    """compute_facets([]) returns empty dicts."""
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+
+    s.upsert_chunk(
+        _make_chunk_with_lang("sha256:a", "Foo.java", "class Foo", "java", "class"),
+        _vec(0), "m", 4,
+    )
+    s.commit()
+
+    facets = s.compute_facets([])
+
+    assert facets == {"language": {}, "kind": {}, "repo": {}}

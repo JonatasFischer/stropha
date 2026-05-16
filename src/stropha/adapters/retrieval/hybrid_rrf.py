@@ -86,6 +86,35 @@ class HybridRrfConfig(BaseModel):
             "Requires Ollama. Set STROPHA_QUERY_REWRITE_ENABLED=1 or this flag."
         ),
     )
+    multi_query_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable multi-query expansion. Generates 3-5 paraphrases of the query, "
+            "searches with each, and fuses results via RRF. Increases recall for "
+            "conceptual queries. Requires Ollama. Set STROPHA_MULTI_QUERY_ENABLED=1."
+        ),
+    )
+    multi_query_count: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Number of paraphrases to generate for multi-query expansion.",
+    )
+    recursive_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable recursive retrieval / auto-merging. When multiple sibling "
+            "chunks from the same parent match, promotes to the parent chunk. "
+            "Also merges adjacent chunks on the same file. "
+            "Requires STROPHA_RECURSIVE_RETRIEVAL=1 or this flag."
+        ),
+    )
+    recursive_adjacency: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Maximum line gap to consider chunks adjacent for merging.",
+    )
     streams: dict[str, dict[str, Any] | None] = Field(
         default_factory=dict,
         description=(
@@ -176,14 +205,35 @@ class HybridRrfRetrieval(RetrievalStage):
         
         import os
         
+        # Check if multi-query expansion is enabled
+        multi_query_enabled = (
+            self._config.multi_query_enabled
+            or os.environ.get("STROPHA_MULTI_QUERY_ENABLED", "0") == "1"
+        )
+        
+        if multi_query_enabled:
+            return self._search_multi_query(query, k)
+        else:
+            return self._search_single_query(query, k)
+
+    def _search_single_query(
+        self, query: str, k: int, *, search_query: str | None = None
+    ) -> list[SearchHit]:
+        """Execute search with a single query (the standard path)."""
+        import os
+        
         # Query rewriting: expand natural language to code terms (affects ALL streams)
-        search_query = query
-        rewrite_enabled = self._config.query_rewrite_enabled or os.environ.get("STROPHA_QUERY_REWRITE_ENABLED", "0") == "1"
-        if rewrite_enabled:
-            from ...retrieval.query_rewrite import maybe_rewrite_query
-            rewritten = maybe_rewrite_query(query, force_enabled=True)
-            if rewritten:
-                search_query = rewritten
+        if search_query is None:
+            search_query = query
+            rewrite_enabled = (
+                self._config.query_rewrite_enabled
+                or os.environ.get("STROPHA_QUERY_REWRITE_ENABLED", "0") == "1"
+            )
+            if rewrite_enabled:
+                from ...retrieval.query_rewrite import maybe_rewrite_query
+                rewritten = maybe_rewrite_query(query, force_enabled=True)
+                if rewritten:
+                    search_query = rewritten
         
         # Single embed for the dense streams (avoids paying twice if the
         # user enables multiple dense backends in the future).
@@ -195,7 +245,10 @@ class HybridRrfRetrieval(RetrievalStage):
         # Enabled via config.hyde_enabled OR env var STROPHA_HYDE_ENABLED=1
         dense_query = search_query
         if needs_vec:
-            hyde_enabled = self._config.hyde_enabled or os.environ.get("STROPHA_HYDE_ENABLED", "0") == "1"
+            hyde_enabled = (
+                self._config.hyde_enabled
+                or os.environ.get("STROPHA_HYDE_ENABLED", "0") == "1"
+            )
             if hyde_enabled:
                 from ...retrieval.hyde import maybe_hyde_rewrite
                 rewritten = maybe_hyde_rewrite(query, force_enabled=True)  # Use original query for HyDE
@@ -224,9 +277,93 @@ class HybridRrfRetrieval(RetrievalStage):
         
         # Optional reranking
         if self._reranker and fused:
-            return self._reranker.rerank(query, fused, top_k=k)
+            fused = self._reranker.rerank(query, fused, top_k=k)
+        else:
+            fused = fused[:k]
         
-        return fused[:k]
+        # Recursive retrieval / auto-merging
+        return self._maybe_recursive_merge(fused)
+
+    def _search_multi_query(self, query: str, k: int) -> list[SearchHit]:
+        """Execute search with multiple paraphrases, fusing results via RRF.
+        
+        Multi-query expansion generates N paraphrases of the query,
+        searches with each, and fuses all results via RRF for better recall.
+        """
+        from ...retrieval.multi_query import generate_paraphrases
+        
+        # Generate paraphrases (includes original query as first element)
+        paraphrases = generate_paraphrases(
+            query,
+            force_enabled=True,
+            num_paraphrases=self._config.multi_query_count,
+        )
+        
+        if len(paraphrases) <= 1:
+            # Fallback to single query if paraphrase generation failed
+            return self._search_single_query(query, k)
+        
+        # Search with each paraphrase
+        all_results: list[list[SearchHit]] = []
+        for paraphrase in paraphrases:
+            # Use larger candidate set since we'll fuse multiple result sets
+            cand_k = max(k * 2, self._config.candidate_k)
+            hits = self._search_single_query(
+                query,  # Original query for HyDE/reranking context
+                cand_k,
+                search_query=paraphrase,  # Paraphrase for actual search
+            )
+            if hits:
+                all_results.append(hits)
+        
+        if not all_results:
+            return []
+        
+        if len(all_results) == 1:
+            fused = all_results[0]
+        else:
+            # Fuse results from all paraphrases via RRF
+            # Use more candidates since we're combining multiple searches
+            fusion_k = self._config.candidate_k if self._reranker else k
+            fused = rrf_fuse(*all_results, k=self._config.rrf_k, top_k=fusion_k)
+        
+        # Optional reranking on the fused results
+        if self._reranker and fused:
+            fused = self._reranker.rerank(query, fused, top_k=k)
+        else:
+            fused = fused[:k]
+        
+        # Recursive retrieval / auto-merging
+        return self._maybe_recursive_merge(fused)
+
+    def _maybe_recursive_merge(self, hits: list[SearchHit]) -> list[SearchHit]:
+        """Apply recursive retrieval / auto-merging if enabled."""
+        import os
+        
+        recursive_enabled = (
+            self._config.recursive_enabled
+            or os.environ.get("STROPHA_RECURSIVE_RETRIEVAL", "0") == "1"
+        )
+        
+        if not recursive_enabled or not hits:
+            return hits
+        
+        from ...retrieval.recursive import merge_hits
+        
+        adjacency = self._config.recursive_adjacency
+        env_adjacency = os.environ.get("STROPHA_RECURSIVE_ADJACENCY")
+        if env_adjacency:
+            try:
+                adjacency = int(env_adjacency)
+            except ValueError:
+                pass
+        
+        return merge_hits(
+            hits,
+            self._storage,  # type: ignore[arg-type]
+            adjacency_lines=adjacency,
+            enabled=True,  # Already checked above
+        )
 
     # ----- helpers --------------------------------------------------------
 

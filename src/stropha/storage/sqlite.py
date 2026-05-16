@@ -1370,6 +1370,78 @@ class Storage:
             ),
         }
 
+    def compute_facets(
+        self,
+        chunk_ids: list[str] | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Compute facet counts for search results.
+
+        Returns counts grouped by language, kind, and repo. When chunk_ids is
+        provided, only counts for those chunks are returned. When None, counts
+        for the entire index are returned.
+
+        Args:
+            chunk_ids: Optional list of chunk_ids to compute facets for.
+                       If None, computes facets for all chunks.
+
+        Returns:
+            Dict with keys 'language', 'kind', 'repo', each mapping to
+            {value: count} dicts.
+        """
+        cur = self._conn.cursor()
+
+        if chunk_ids is None:
+            # Full index facets
+            language_rows = cur.execute(
+                "SELECT language, COUNT(*) AS n FROM chunks GROUP BY language"
+            ).fetchall()
+            kind_rows = cur.execute(
+                "SELECT kind, COUNT(*) AS n FROM chunks GROUP BY kind"
+            ).fetchall()
+            repo_rows = cur.execute(
+                """SELECT COALESCE(r.normalized_key, '(local)') AS repo, COUNT(*) AS n
+                   FROM chunks c
+                   LEFT JOIN repos r ON r.id = c.repo_id
+                   GROUP BY repo"""
+            ).fetchall()
+        else:
+            if not chunk_ids:
+                return {"language": {}, "kind": {}, "repo": {}}
+
+            # Facets for specific chunks - use temp table for efficiency
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS _facet_ids (chunk_id TEXT)")
+            cur.execute("DELETE FROM _facet_ids")
+            cur.executemany(
+                "INSERT INTO _facet_ids (chunk_id) VALUES (?)",
+                [(cid,) for cid in chunk_ids],
+            )
+
+            language_rows = cur.execute(
+                """SELECT c.language, COUNT(*) AS n
+                   FROM chunks c
+                   JOIN _facet_ids f ON f.chunk_id = c.chunk_id
+                   GROUP BY c.language"""
+            ).fetchall()
+            kind_rows = cur.execute(
+                """SELECT c.kind, COUNT(*) AS n
+                   FROM chunks c
+                   JOIN _facet_ids f ON f.chunk_id = c.chunk_id
+                   GROUP BY c.kind"""
+            ).fetchall()
+            repo_rows = cur.execute(
+                """SELECT COALESCE(r.normalized_key, '(local)') AS repo, COUNT(*) AS n
+                   FROM chunks c
+                   JOIN _facet_ids f ON f.chunk_id = c.chunk_id
+                   LEFT JOIN repos r ON r.id = c.repo_id
+                   GROUP BY repo"""
+            ).fetchall()
+
+        return {
+            "language": {row["language"]: int(row["n"]) for row in language_rows},
+            "kind": {row["kind"]: int(row["n"]) for row in kind_rows},
+            "repo": {row["repo"]: int(row["n"]) for row in repo_rows},
+        }
+
     def close(self) -> None:
         self._conn.close()
 

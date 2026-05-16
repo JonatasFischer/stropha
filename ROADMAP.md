@@ -1,21 +1,55 @@
-# Stropha RAG Roadmap — Feature Parity com Estado da Arte
+# Stropha RAG Roadmap — Best-in-Class RAG Backend for MCP
 
-> **Objetivo:** Implementar funcionalidades RAG que faltam no stropha para atingir paridade com Cursor, Sourcegraph Cody e outras soluções enterprise, mantendo a filosofia local-first.
+> **Strategy:** Be the **best RAG backend** that MCP clients (OpenCode, Continue, Cursor, Zed, etc.) can use. Double down on graph intelligence as the unique differentiator.
 >
-> **Data:** 2026-05-16
-> **Status:** Em andamento
+> **Non-goals:** Stropha is NOT an IDE. We don't compete with Cursor's editor, Tab completions, or cloud agents. We provide context retrieval that makes ANY MCP client smarter.
+>
+> **Date:** 2026-05-16
+> **Status:** In progress
 
 ---
 
-## Resumo Executivo
+## Strategic Focus
 
-| Categoria | Atual | Meta | Gap |
-|-----------|-------|------|-----|
-| Retrieval | 80% | 100% | Reranking, Auto-merge, SPLADE |
-| Query Processing | 40% | 90% | HyDE, Rewrite, Multi-query |
-| Filtering | 30% | 90% | Exposição MCP, Facetas |
-| Indexing | 90% | 100% | Soft index, Glossário |
-| Graph | 95% | 100% | Anchors arquiteturais |
+### Option A: Best RAG Backend for MCP Clients
+- Focus on retrieval quality (already strong)
+- Ship integrations for OpenCode, Continue, Zed, etc.
+- Make stropha the "best RAG backend for MCP clients"
+
+### Option C: Graph Intelligence Moat
+- Cursor has basic codebase indexing
+- Stropha has graphify with community detection, god nodes, cross-file relationships
+- Double down on "understand architecture, not just search code"
+
+---
+
+## Current Status
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Hybrid retrieval (4-stream RRF) | ✅ | dense + BM25 + symbol + graph-vec |
+| HyDE | ✅ | Hypothetical document via Ollama |
+| Query rewriting | ✅ | LLM-powered query optimization |
+| Reranking | ✅ | Local cross-encoder (fastembed) |
+| MCP filters | ✅ | language, path_prefix, kind, exclude_tests |
+| Graph traversal | ✅ | find_callers, find_related, trace_feature |
+| Community detection | ✅ | Unique in market |
+| Local-first | ✅ | Zero cloud dependency |
+
+---
+
+## Remaining Gaps
+
+| Gap | Priority | Effort | Impact | Status |
+|-----|----------|--------|--------|--------|
+| Faceted search | P1 | Small | Medium | **Done** |
+| Multi-query expansion | P2 | Small | Medium | **Done** |
+| Semantic query cache | P2 | Small | Medium | **Done** |
+| Contextual enricher | P1 | Medium | High | **Done** |
+| Auto-merging retrieval | P2 | Medium | Medium | **Done** |
+| Recursive --flag | P2 | Small | Medium | **Done** |
+| SPLADE stream | P3 | Medium | Low | Deferred |
+| Glossary | P3 | Small | Low | Deferred |
 
 ---
 
@@ -479,81 +513,212 @@ splade = [
 ### Sprint 1
 - [x] 1.1 Reranker local (cross-encoder via fastembed) - CONCLUIDO 2026-05-16
 - [x] 1.2 Filtros no MCP (language, path_prefix, kind, exclude_tests) - CONCLUIDO 2026-05-16
-- [ ] 1.3 Faceted response
-  - [ ] 1.3.1 Add FacetCounts model to server.py (language, kind, repo counts)
-  - [ ] 1.3.2 Update SearchResponse model to include optional facets field
-  - [ ] 1.3.3 Add compute_facets() method to Storage class (single SQL query)
-  - [ ] 1.3.4 Update search_code tool to compute and return facets
-  - [ ] 1.3.5 Add include_facets parameter to search_code (default False)
-  - [ ] 1.3.6 Write unit test for faceted search response
+- [x] 1.3 Faceted response - CONCLUIDO 2026-05-16
+  - [x] 1.3.1 Add FacetCounts model to server.py (language, kind, repo counts)
+  - [x] 1.3.2 Update SearchResponse model to include optional facets field
+  - [x] 1.3.3 Add compute_facets() method to Storage class (single SQL query)
+  - [x] 1.3.4 Update search_code tool to compute and return facets
+  - [x] 1.3.5 Add include_facets parameter to search_code (default False)
+  - [x] 1.3.6 Write unit test for faceted search response
 
 ### Sprint 2
 - [x] 2.1 HyDE integrado no hybrid-rrf - CONCLUIDO 2026-05-16
 - [x] 2.2 Query rewriting - CONCLUIDO 2026-05-16
-- [ ] 2.3 Multi-query expansion
-  - [ ] 2.3.1 Create src/stropha/retrieval/multi_query.py module
-  - [ ] 2.3.2 Implement MultiQueryExpander class with generate_paraphrases()
-  - [ ] 2.3.3 Use Ollama/MLX LLM to generate 3-5 paraphrases
-  - [ ] 2.3.4 Add multi_query_enabled config to HybridRrfConfig
-  - [ ] 2.3.5 Integrate into HybridRrfRetrieval.search() - run N searches, RRF fuse
-  - [ ] 2.3.6 Add STROPHA_MULTI_QUERY_ENABLED env var support
-  - [ ] 2.3.7 Add cache for paraphrases (avoid repeated LLM calls)
-  - [ ] 2.3.8 Write unit test for multi-query expansion
+- [x] 2.3 Multi-query expansion - CONCLUIDO 2026-05-16
+  - [x] 2.3.1 Create src/stropha/retrieval/multi_query.py module
+  - [x] 2.3.2 Implement MultiQueryExpander class with generate_paraphrases()
+  - [x] 2.3.3 Use Ollama/MLX LLM to generate 3-5 paraphrases
+  - [x] 2.3.4 Add multi_query_enabled config to HybridRrfConfig
+  - [x] 2.3.5 Integrate into HybridRrfRetrieval.search() - run N searches, RRF fuse
+  - [x] 2.3.6 Add STROPHA_MULTI_QUERY_ENABLED env var support
+  - [x] 2.3.7 Add cache for paraphrases (avoid repeated LLM calls)
+  - [x] 2.3.8 Write unit tests for multi-query expansion (17 tests)
 
-### Sprint 3
-- [ ] 3.1 Auto-merging retrieval
-- [ ] 3.2 Recursive retrieval (completar)
-- [ ] 3.3 SPLADE stream
+### Sprint 3 - Retrieval Avançado
+- [x] 3.1 Auto-merging retrieval - ALREADY IMPLEMENTED (see recursive.py)
+  - [x] 3.1.1 src/stropha/retrieval/recursive.py already implements parent promotion + adjacency merging
+  - [x] 3.1.2 `_maybe_merge_parent()` promotes siblings to parent chunk
+  - [x] 3.1.3 Integrated into HybridRrfRetrieval via `_maybe_recursive_merge()`
+  - [x] 3.1.4 Config: `recursive_enabled`, `recursive_adjacency` in HybridRrfConfig
+  - [x] 3.1.5 Env vars: STROPHA_RECURSIVE_RETRIEVAL, STROPHA_RECURSIVE_ADJACENCY
+  - [x] 3.1.6 16 tests in test_hyde_and_recursive.py
+- [x] 3.2 Recursive retrieval (completar) - CONCLUIDO 2026-05-16
+  - [x] 3.2.1 Add --recursive flag to CLI search command
+  - [x] 3.2.2 Add recursive parameter to MCP search_code tool
+  - [x] 3.2.3 Parent + adjacency merging implemented in recursive.py
+  - [x] 3.2.4 Integration via HybridRrfRetrieval._maybe_recursive_merge()
+  - [x] 3.2.5 Adjacency configurable via STROPHA_RECURSIVE_ADJACENCY
+  - [x] 3.2.6 Existing tests in test_hyde_and_recursive.py
+- [ ] 3.3 SPLADE stream (deferred - BM25 sufficient for now)
 
-### Sprint 4
-- [ ] 4.1 Contextual prefix enricher
-- [ ] 4.2 Glossário de domínio
-- [ ] 4.3 Comentários como chunks separados
+### Sprint 4 - Contextual Enrichment (Highest ROI)
+- [x] 4.1 Contextual prefix enricher (+35% recall per Anthropic benchmarks) - CONCLUIDO 2026-05-16
+  - [x] 4.1.1 Create src/stropha/adapters/enricher/contextual.py
+  - [x] 4.1.2 Define ContextualEnricherConfig (model, prompt_template, max_content_chars, max_description_chars)
+  - [x] 4.1.3 Implement _generate_context() using Ollama HTTP API
+  - [x] 4.1.4 Prompt template with placeholders: {content}, {language}, {rel_path}, {symbol}
+  - [x] 4.1.5 Prepend [Context: description] to embedding_text
+  - [x] 4.1.6 Cache by content_hash via enrichments table (existing infrastructure)
+  - [x] 4.1.7 Fallback to raw content if LLM unavailable (graceful degradation)
+  - [x] 4.1.8 Register adapter with @register_adapter(stage="enricher", name="contextual")
+  - [x] 4.1.9 Write unit tests (19 tests with mock Ollama responses)
+  - [ ] 4.1.10 Benchmark: compare recall with/without contextual enricher (deferred)
+- [ ] 4.2 Domain glossary
+  - [ ] 4.2.1 Schema v8: Add glossary table (term, definition, embedding, repo_id)
+  - [ ] 4.2.2 Create src/stropha/ingest/glossary.py module
+  - [ ] 4.2.3 Support manual glossary via YAML file (stropha-glossary.yaml)
+  - [ ] 4.2.4 Support auto-extraction via LLM (scan code for domain terms)
+  - [ ] 4.2.5 Index glossary terms as special chunks (kind=glossary)
+  - [ ] 4.2.6 Boost glossary matches in conceptual queries
+  - [ ] 4.2.7 CLI: stropha glossary {add,list,import,export}
+  - [ ] 4.2.8 Write unit tests for glossary
+- [ ] 4.3 Separate comment indexing
+  - [ ] 4.3.1 Extend tree-sitter chunkers to extract docstrings/Javadoc separately
+  - [ ] 4.3.2 Create chunks with kind=comment, linked to code chunk
+  - [ ] 4.3.3 Add related_chunk_id column to chunks table
+  - [ ] 4.3.4 Boost comment chunks for natural language queries
+  - [ ] 4.3.5 Write unit tests for comment extraction
 
-### Sprint 5
-- [ ] 5.1 Soft index overlay
-- [ ] 5.2 Anchors arquiteturais
+### Sprint 5 - Polish & UX
+- [ ] 5.1 Soft index overlay (working tree)
+  - [ ] 5.1.1 Create src/stropha/storage/overlay.py module
+  - [ ] 5.1.2 Implement OverlayStorage wrapping base Storage
+  - [ ] 5.1.3 RAM-based overlay for uncommitted changes
+  - [ ] 5.1.4 File watcher detects changes, re-chunks modified files only
+  - [ ] 5.1.5 Queries transparently merge overlay + base results
+  - [ ] 5.1.6 On commit, flush overlay to base index
+  - [ ] 5.1.7 Integrate with existing stropha watch command
+  - [ ] 5.1.8 Write unit tests for overlay storage
+- [ ] 5.2 Architectural anchors detection
+  - [ ] 5.2.1 Create src/stropha/ingest/anchors.py module
+  - [ ] 5.2.2 Define anchor patterns per language (annotations, naming conventions)
+  - [ ] 5.2.3 Detect: aggregate roots, controllers, resolvers, config entry points
+  - [ ] 5.2.4 Add is_architectural_anchor boolean to chunks table
+  - [ ] 5.2.5 Boost anchors in architectural queries ("entry point", "main flow")
+  - [ ] 5.2.6 Expose in MCP: filter by anchor=true
+  - [ ] 5.2.7 Write unit tests for anchor detection
+
+### Sprint 6 - Semantic Cache & Performance
+- [x] 6.1 Semantic query cache - CONCLUIDO 2026-05-16
+  - [x] 6.1.1 Create src/stropha/retrieval/cache.py module
+  - [x] 6.1.2 Implement SemanticCache with LRU eviction
+  - [x] 6.1.3 Key: (query_embedding_centroid_rounded, top_k, filters_hash)
+  - [x] 6.1.4 Store: list of chunk_ids + scores (not full results)
+  - [x] 6.1.5 TTL-based invalidation (configurable, default 1 hour)
+  - [x] 6.1.6 Global cache singleton for MCP server
+  - [x] 6.1.7 Add STROPHA_QUERY_CACHE_ENABLED, STROPHA_QUERY_CACHE_SIZE, STROPHA_QUERY_CACHE_TTL env vars
+  - [x] 6.1.8 Write unit tests for semantic cache (21 tests)
+- [ ] 6.2 Connection pooling for future remote backends
+- [ ] 6.3 Binary quantization for large indexes (deferred)
+
+### Sprint 7 - Documentation & Adoption
+- [x] 7.1 MCP integration guide - CONCLUIDO 2026-05-16
+  - [x] 7.1.1 Create docs/guides/mcp-integration.md
+  - [x] 7.1.2 OpenCode integration
+  - [x] 7.1.3 Continue integration
+  - [x] 7.1.4 Zed integration
+  - [x] 7.1.5 Cursor integration (via MCP)
+  - [x] 7.1.6 Claude Desktop integration
+  - [x] 7.1.7 Generic MCP client instructions
+- [ ] 7.2 Performance tuning guide
+  - [ ] 7.2.1 Create docs/guides/performance.md
+  - [ ] 7.2.2 Large repo recommendations (>100k files)
+  - [ ] 7.2.3 Embedder selection guide
+  - [ ] 7.2.4 Enricher tradeoffs
+  - [ ] 7.2.5 Hook optimization for monorepos
+- [ ] 7.3 Troubleshooting guide
+  - [ ] 7.3.1 Create docs/guides/troubleshooting.md
+  - [ ] 7.3.2 Common errors and solutions
+  - [ ] 7.3.3 Hook debugging
+  - [ ] 7.3.4 Index corruption recovery
 
 ---
 
 ---
 
-## Comparação: Stropha vs. Concorrentes
+## Competitive Position: Stropha as RAG Backend
 
-| Feature | Cursor | Cody | Continue | Stropha |
-|---------|--------|------|----------|---------|
-| Reranking | ✓ Cloud | ✓ Cloud | ✗ | **✓ Local** |
+| Feature | Cursor | Cody | Continue | **Stropha** |
+|---------|--------|------|----------|-------------|
+| **Retrieval Quality** |
+| Reranking | Cloud | Cloud | ✗ | **✓ Local** |
 | HyDE | ✓ | ✗ | ✗ | **✓** |
 | Query rewrite | ✓ | ✓ | ✗ | **✓** |
-| Multi-query | ✓ | ✗ | ✗ | ✗ |
-| Filtros ricos | ✓ | ✓ | Parcial | **✓** |
-| Faceted search | ✓ | ✓ | ✗ | ✗ |
-| Auto-merge | ✓ | ✗ | ✗ | ✗ |
-| SPLADE | ✗ | ✗ | ✗ | ✗ |
-| Graph traversal | Básico | ✓ SCIP | ✗ | **✓✓** |
-| Community detection | ✗ | ✗ | ✗ | **✓** |
+| Multi-query | ✓ | ✗ | ✗ | **✓** |
+| Rich filters | ✓ | ✓ | Partial | **✓** |
+| Faceted search | ✓ | ✓ | ✗ | **✓** |
+| **Graph Intelligence (Moat)** |
+| Graph traversal | Basic | ✓ SCIP | ✗ | **✓✓ Advanced** |
+| Community detection | ✗ | ✗ | ✗ | **✓ Unique** |
+| God nodes | ✗ | ✗ | ✗ | **✓ Unique** |
+| trace_feature | ✗ | ✗ | ✗ | **✓ Unique** |
+| find_rationale | ✗ | ✗ | ✗ | **✓ Unique** |
+| **Philosophy** |
 | Local-first | ✗ | ✗ | ✓ | **✓✓** |
+| MCP native | ✗ | ✗ | ✓ | **✓** |
+| Zero cloud cost | ✗ | ✗ | Partial | **✓** |
 
-### Conclusão
+### Key Insight
 
-O stropha agora tem:
+Stropha is NOT competing with Cursor as an IDE. It's the **retrieval layer** that can power:
+- OpenCode (primary target)
+- Continue
+- Zed's AI features
+- Any MCP-compatible client
+- Even Cursor itself (via MCP)
 
-1. **Reranker local** — ✅ cross-encoder via fastembed (2026-05-16)
-2. **HyDE + Query rewriting** — ✅ inteligência de query (2026-05-16)
-3. **Filtros expostos no MCP** — ✅ language, path_prefix, kind, exclude_tests (2026-05-16)
-
-Próximos gaps a fechar:
-1. **Faceted search** — retornar contagens por faceta
-2. **Multi-query expansion** — gerar paráfrases e fusionar resultados
-
-O diferencial do graph já está implementado e é único no mercado.
+The graph intelligence (community detection, god nodes, trace_feature) is unique in the market and provides architectural understanding that no competitor offers.
 
 ---
 
-## Histórico
+## Implementation Order (Optimized for Impact)
 
-| Data | Mudança |
-|------|---------|
-| 2026-05-16 | Documento criado com roadmap completo |
-| 2026-05-16 | Sprint 1.1, 1.2, 2.1, 2.2 concluídos - reranker, filtros MCP, HyDE, query rewrite |
-| 2026-05-16 | Detalhamento das subtarefas de 1.3 (faceted) e 2.3 (multi-query) |
+Based on ROI analysis, here's the recommended implementation order:
+
+### Phase 1: Quick Wins (1-2 days each)
+1. **Multi-query expansion** (Sprint 2.3) — leverages existing Ollama/MLX, small effort
+2. **Semantic query cache** (Sprint 6.1) — ~0.5 day, immediate latency improvement
+
+### Phase 2: Highest ROI (3-5 days each)
+3. **Contextual prefix enricher** (Sprint 4.1) — +35% recall per Anthropic benchmarks
+4. **Auto-merging retrieval** (Sprint 3.1) — better UX, saves context window
+
+### Phase 3: Complete the Retrieval Stack (2-3 days each)
+5. **Recursive retrieval** (Sprint 3.2) — two-pass search for better coverage
+6. **Domain glossary** (Sprint 4.2) — helps conceptual queries
+
+### Phase 4: Polish (2-3 days each)
+7. **Soft index overlay** (Sprint 5.1) — real-time uncommitted changes
+8. **Architectural anchors** (Sprint 5.2) — auto-detect entry points
+
+### Phase 5: Documentation (1-2 days)
+9. **MCP integration guide** (Sprint 7.1) — critical for adoption
+10. **Performance & troubleshooting guides** (Sprint 7.2, 7.3)
+
+---
+
+## Next Steps (Priority Order)
+
+1. ~~**Faceted search** — return counts per facet (Sprint 1.3)~~ **Done**
+2. ~~**Multi-query expansion** — generate paraphrases and fuse results (Sprint 2.3)~~ **Done**
+3. ~~**Semantic query cache** — LRU cache for repeated queries (Sprint 6.1)~~ **Done**
+4. ~~**Contextual prefix enricher** — LLM-generated semantic descriptions (Sprint 4.1)~~ **Done**
+5. **MCP integration guide** — document usage with OpenCode, Continue, Zed (Sprint 7.1)
+
+---
+
+## History
+
+| Date | Change |
+|------|--------|
+| 2026-05-16 | Document created with full roadmap |
+| 2026-05-16 | Sprint 1.1, 1.2, 2.1, 2.2 completed - reranker, MCP filters, HyDE, query rewrite |
+| 2026-05-16 | Detailed subtasks for 1.3 (faceted) and 2.3 (multi-query) |
+| 2026-05-16 | Strategic pivot: Option A (best RAG backend) + Option C (graph moat) |
+| 2026-05-16 | Sprint 1.3 completed - faceted search with include_facets parameter |
+| 2026-05-16 | Sprint 2.3 completed - multi-query expansion with cache + 17 tests |
+| 2026-05-16 | Sprint 6.1 completed - semantic query cache with LRU + TTL + 21 tests |
+| 2026-05-16 | Sprint 4.1 completed - contextual prefix enricher + 19 tests |
+| 2026-05-16 | Sprint 3.1+3.2 completed - --recursive flag for CLI + MCP search_code |
+| 2026-05-16 | Sprint 7.1 completed - MCP integration guide (docs/guides/mcp-integration.md) |
+| 2026-05-16 | Comprehensive implementation plan added - Sprints 3-7 with detailed subtasks |

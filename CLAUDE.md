@@ -45,7 +45,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 
 | Tool | Purpose | Graph required |
 |---|---|---|
-| `search_code` | Hybrid semantic + lexical search (4 streams + RRF, optional reranker + filters: `language`, `path_prefix`, `kind`, `exclude_tests`) | no |
+| `search_code` | Hybrid semantic + lexical search (4 streams + RRF, optional reranker + filters: `language`, `path_prefix`, `kind`, `exclude_tests`, `recursive`) | no |
 | `get_symbol` | Exact symbol lookup, cheaper than `search_code` when name is known | no |
 | `get_file_outline` | Symbolic outline of one file — plan a `Read` before consuming a whole file | no |
 | `list_repos` | Enumerate repos present in the index | no |
@@ -65,7 +65,7 @@ Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirr
 |---|---|---|
 | walker | `git-ls-files`, `filesystem`, `nested-git` | `<name>:max=<bytes>[:depth=<n>]` |
 | chunker | `tree-sitter-dispatch` (+ 5 language sub-adapters: `ast-generic`, `file-level`, `heading-split`, `sfc-split`, `regex-feature-scenario`) | `tree-sitter-dispatch:<hash>` |
-| enricher | `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | `<name>:<flag-letters>` (drift on flag flip) |
+| enricher | `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx`, `contextual` | `<name>:<flag-letters>` (drift on flag flip) |
 | embedder | `local` (fastembed), `voyage`, `bge-m3` | `<name>:<model>:<dim>` |
 | storage | `sqlite-vec` | `sqlite-vec:dim=<n>` |
 | retrieval | `hybrid-rrf` (4 streams fused + optional reranker) | `hybrid-rrf:k=60:streams=<hash>:reranker=<id>` |
@@ -99,6 +99,13 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama daemon used by `ollama` enricher + HyDE |
 | `STROPHA_HYDE_ENABLED` | `0` | Route the dense-stream query through Ollama (hypothetical doc rewrite) |
 | `STROPHA_HYDE_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used by HyDE |
+| `STROPHA_QUERY_REWRITE_ENABLED` | `0` | LLM rewrites query to expand natural language into code terms |
+| `STROPHA_MULTI_QUERY_ENABLED` | `0` | Generate N paraphrases of query, search each, RRF fuse results |
+| `STROPHA_MULTI_QUERY_COUNT` | `3` | Number of paraphrases to generate (1-5) |
+| `STROPHA_MULTI_QUERY_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used for paraphrase generation |
+| `STROPHA_QUERY_CACHE_ENABLED` | `0` | Enable semantic query cache (LRU, in-memory) |
+| `STROPHA_QUERY_CACHE_SIZE` | `500` | Max cache entries |
+| `STROPHA_QUERY_CACHE_TTL` | `3600` | Cache entry TTL in seconds (default 1 hour) |
 | `STROPHA_RECURSIVE_RETRIEVAL` | `0` | Enable parent + adjacent-line auto-merge in `search` results |
 | `STROPHA_RECURSIVE_ADJACENCY` | `5` | Line gap considered "adjacent" |
 | `STROPHA_GRAPH_FTS_AUGMENT` | `1` | Retroactive FTS5 augmentation with community / node labels |
@@ -119,9 +126,9 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (392 unit tests, ~8s)
+### 2.6 Test inventory (499 unit tests, ~9s)
 
-Per file: `test_chunker` 8 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
+Per file: `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 
 ## 3. Key invariants (do NOT break)
 
