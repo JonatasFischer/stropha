@@ -620,17 +620,17 @@ splade = [
   - [x] 7.1.5 Cursor integration (via MCP)
   - [x] 7.1.6 Claude Desktop integration
   - [x] 7.1.7 Generic MCP client instructions
-- [ ] 7.2 Performance tuning guide
-  - [ ] 7.2.1 Create docs/guides/performance.md
-  - [ ] 7.2.2 Large repo recommendations (>100k files)
-  - [ ] 7.2.3 Embedder selection guide
-  - [ ] 7.2.4 Enricher tradeoffs
-  - [ ] 7.2.5 Hook optimization for monorepos
-- [ ] 7.3 Troubleshooting guide
-  - [ ] 7.3.1 Create docs/guides/troubleshooting.md
-  - [ ] 7.3.2 Common errors and solutions
-  - [ ] 7.3.3 Hook debugging
-  - [ ] 7.3.4 Index corruption recovery
+- [x] 7.2 Performance tuning guide - CONCLUIDO 2026-05-16
+  - [x] 7.2.1 Create docs/guides/performance.md
+  - [x] 7.2.2 Large repo recommendations (>100k files)
+  - [x] 7.2.3 Embedder selection guide
+  - [x] 7.2.4 Enricher tradeoffs
+  - [x] 7.2.5 Hook optimization for monorepos
+- [x] 7.3 Troubleshooting guide - CONCLUIDO 2026-05-16
+  - [x] 7.3.1 Create docs/guides/troubleshooting.md
+  - [x] 7.3.2 Common errors and solutions
+  - [x] 7.3.3 Hook debugging
+  - [x] 7.3.4 Index corruption recovery
 
 ---
 
@@ -722,4 +722,5 @@ Based on ROI analysis, here's the recommended implementation order:
 | 2026-05-16 | Sprint 3.1+3.2 completed - --recursive flag for CLI + MCP search_code |
 | 2026-05-16 | Sprint 7.1 completed - MCP integration guide (docs/guides/mcp-integration.md) |
 | 2026-05-16 | Sprint 4.2 completed - domain glossary with CLI commands + 23 tests |
+| 2026-05-16 | Sprint 7.2+7.3 completed - performance tuning + troubleshooting guides |
 | 2026-05-16 | Comprehensive implementation plan added - Sprints 3-7 with detailed subtasks |
