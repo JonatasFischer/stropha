@@ -104,6 +104,8 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `STROPHA_HYDE_ENABLED` | `0` | Route the dense-stream query through Ollama (hypothetical doc rewrite) |
 | `STROPHA_HYDE_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used by HyDE |
 | `STROPHA_QUERY_ROUTER_LLM` | `0` | Use LLM for ambiguous query routing (slower but more accurate) |
+| `STROPHA_QUERY_DECOMPOSITION_ENABLED` | `0` | Split compound queries into sub-queries, search each, RRF fuse |
+| `STROPHA_QUERY_DECOMPOSITION_LLM` | `0` | Use LLM for complex query decomposition |
 | `STROPHA_QUERY_REWRITE_ENABLED` | `0` | LLM rewrites query to expand natural language into code terms |
 | `STROPHA_MULTI_QUERY_ENABLED` | `0` | Generate N paraphrases of query, search each, RRF fuse results |
 | `STROPHA_MULTI_QUERY_COUNT` | `3` | Number of paraphrases to generate (1-5) |
@@ -131,9 +133,9 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (608 unit tests, ~11s)
+### 2.6 Test inventory (637 unit tests, ~11s)
 
-Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_glossary` 23 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_query_router` 41 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
+Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_glossary` 23 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_query_decomposition` 29 · `test_query_router` 41 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 
 ## 3. Key invariants (do NOT break)
 
@@ -430,9 +432,9 @@ Current benchmark (mimoria golden set): symbol-lookup 100%, conceptual 33%, mult
 | Feature | Effort | Expected Gain | Status |
 |---------|--------|---------------|--------|
 | Query routing to graph tools | 2d | +40% multi-hop | **done** |
-| Query decomposition + sub-query fusion | 1d | +25% natural-language | pending |
+| Query decomposition + sub-query fusion | 1d | +25% natural-language | **done** |
 
-Query routing classifies intent ("what calls X" → `find_callers`, "tests for X" → `find_tests_for`) and dispatches to the appropriate tool. Implemented as `smart_search` MCP tool with pattern-based classification + optional LLM fallback (`STROPHA_QUERY_ROUTER_LLM=1`). Query decomposition splits complex queries into atomic sub-queries, retrieves each, and fuses via RRF.
+Query routing classifies intent ("what calls X" → `find_callers`, "tests for X" → `find_tests_for`) and dispatches to the appropriate tool. Implemented as `smart_search` MCP tool with pattern-based classification + optional LLM fallback (`STROPHA_QUERY_ROUTER_LLM=1`). Query decomposition splits complex queries into atomic sub-queries, retrieves each, and fuses via RRF. Enable with `STROPHA_QUERY_DECOMPOSITION_ENABLED=1` or use LLM for ambiguous cases with `STROPHA_QUERY_DECOMPOSITION_LLM=1`.
 
 **Priority 2 — Contextual Retrieval (Anthropic method, ~3 days):**
 

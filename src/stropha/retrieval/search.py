@@ -5,6 +5,8 @@ Phase 1: no reranker yet — spec §16 puts Voyage `rerank-2.5` in Phase 2.
 
 from __future__ import annotations
 
+import os
+
 from ..embeddings.base import Embedder
 from ..logging import get_logger
 from ..models import SearchHit
@@ -31,6 +33,7 @@ class SearchEngine:
         *,
         candidate_k: int = CANDIDATE_K,
         rrf_k: int = DEFAULT_K,
+        decompose: bool | None = None,
     ) -> list[SearchHit]:
         """Three-stream hybrid retrieval, fused with RRF.
 
@@ -40,9 +43,59 @@ class SearchEngine:
         - symbol — direct match on the `symbol` column for identifier tokens
                    in the query (spec §6.3.5 query routing).
         Empty streams are dropped before fusion.
+        
+        Query decomposition (optional):
+        When enabled (decompose=True or STROPHA_QUERY_DECOMPOSITION_ENABLED=1),
+        compound queries like "how does X work and what calls Y" are split
+        into atomic sub-queries, searched separately, and fused via RRF.
         """
         if not query.strip():
             return []
+        
+        # Check for query decomposition
+        if decompose is None:
+            decompose = os.environ.get("STROPHA_QUERY_DECOMPOSITION_ENABLED", "0") == "1"
+        
+        if decompose:
+            from .query_decomposition import decompose_query
+            
+            result = decompose_query(query)
+            if len(result.sub_queries) > 1:
+                log.info(
+                    "search.decomposed",
+                    original=query[:50],
+                    sub_count=len(result.sub_queries),
+                    method=result.method,
+                )
+                # Search each sub-query and fuse results
+                all_hits = []
+                for sub_query in result.sub_queries:
+                    sub_hits = self._search_single(
+                        sub_query,
+                        top_k=top_k,
+                        candidate_k=candidate_k,
+                        rrf_k=rrf_k,
+                    )
+                    all_hits.append(sub_hits)
+                
+                # Fuse all sub-query results via RRF
+                if all_hits:
+                    fused = rrf_fuse(*all_hits, k=rrf_k, top_k=top_k)
+                    from .recursive import merge_hits
+                    return merge_hits(fused, self._storage)
+                return []
+        
+        return self._search_single(query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k)
+
+    def _search_single(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        candidate_k: int = CANDIDATE_K,
+        rrf_k: int = DEFAULT_K,
+    ) -> list[SearchHit]:
+        """Single-query hybrid search (internal)."""
         # HyDE — only the dense embedding sees the hypothetical doc; BM25
         # and the symbol-token lane keep the literal query. Falls back
         # to the raw query if disabled or the LLM call fails.
