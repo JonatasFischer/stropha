@@ -133,7 +133,7 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (637 unit tests, ~11s)
+### 2.6 Test inventory (646 unit tests, ~12s)
 
 Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_glossary` 23 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_query_decomposition` 29 · `test_query_router` 41 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 
@@ -448,10 +448,10 @@ Prepend LLM-generated context to each chunk before embedding. The context descri
 
 | Feature | Effort | Expected Gain | Status |
 |---------|--------|---------------|--------|
-| Code-tuned HyDE prompts | 0.5d | +15% conceptual | pending |
+| Code-tuned HyDE prompts | 0.5d | +15% conceptual | **done** |
 | Larger model support (deepseek-coder-v2, codestral) | 0.5d | +10% conceptual | pending |
 
-Current HyDE uses generic prompts. Code queries need code-shaped hypothetical documents with proper prompt engineering.
+Code-tuned HyDE prompts automatically select the best prompt template based on query type (function, class, how, where, test, error). Enable with `STROPHA_HYDE_ENABLED=1` (code-tuned prompts are on by default). Disable code-tuned prompts with `STROPHA_HYDE_CODE_TUNED=0`.
 
 **Priority 4 — Late Chunking (~1 week):**
 

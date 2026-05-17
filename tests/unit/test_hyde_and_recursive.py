@@ -69,6 +69,83 @@ def test_hyde_caps_long_output(monkeypatch) -> None:
     assert len(out) <= 2000
 
 
+def test_hyde_strips_code_fences(monkeypatch) -> None:
+    """HyDE should strip markdown code fences from LLM output."""
+    monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = "```java\npublic void login() {}\n```"
+        out = maybe_hyde_rewrite("how does login work")
+    assert out is not None
+    assert "```" not in out
+    assert "public void login" in out
+
+
+# --------------------------------------------------------------------------- code-tuned prompts
+
+
+def test_hyde_code_tuned_function_query() -> None:
+    """Function-related queries should use the function prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("show me the login function") == "function"
+    assert get_prompt_type("what does the method processCard do") == "function"
+
+
+def test_hyde_code_tuned_class_query() -> None:
+    """Class-related queries should use the class prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("show me the User class") == "class"
+    assert get_prompt_type("what is the FsrsAlgorithm type") == "class"
+
+
+def test_hyde_code_tuned_how_query() -> None:
+    """How queries should use the how prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("how does spaced repetition work") == "how"
+    assert get_prompt_type("how is stability calculated") == "how"
+
+
+def test_hyde_code_tuned_where_query() -> None:
+    """Where/find queries should use the where prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("where is the scheduler defined") == "where"
+    assert get_prompt_type("find the authentication code") == "where"
+
+
+def test_hyde_code_tuned_test_query() -> None:
+    """Test-related queries should use the test prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("test FsrsAlgorithm") == "test"
+    assert get_prompt_type("show me the spec for login") == "test"
+    assert get_prompt_type("assertions for the scheduler") == "test"
+
+
+def test_hyde_code_tuned_error_query() -> None:
+    """Bug/error queries should use the error prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("fix the login bug") == "error"
+    assert get_prompt_type("debug the scheduling issue") == "error"
+
+
+def test_hyde_code_tuned_default_query() -> None:
+    """Generic queries should use the default prompt."""
+    from stropha.retrieval.hyde import get_prompt_type
+    assert get_prompt_type("explain FSRS algorithm") == "default"
+    assert get_prompt_type("show me the code") == "default"
+
+
+def test_hyde_code_tuned_disabled(monkeypatch) -> None:
+    """Code-tuned prompts can be disabled."""
+    monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
+    monkeypatch.setenv("STROPHA_HYDE_CODE_TUNED", "0")
+    with patch("stropha.inference.generate") as mock_gen:
+        mock_gen.return_value = "result"
+        maybe_hyde_rewrite("how does login work")
+        # Check the prompt used contains the legacy format
+        call_args = mock_gen.call_args
+        prompt = call_args[0][0]
+        assert "imaginary code snippet" in prompt
+
+
 # --------------------------------------------------------------------------- recursive merge
 
 
